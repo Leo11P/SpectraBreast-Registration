@@ -22,7 +22,7 @@ import cv2
 import numpy as np
 import yaml
  
-from Pipeline_registrazione_2D3D_new import (
+from pipeline import (
     run_full_pipeline,
     extract_suspicious_centroids,
     load_mesh,
