@@ -22,7 +22,7 @@ import cv2
 import numpy as np
 import yaml
  
-from pipeline import (
+from spectrabreast.pipeline import (
     run_full_pipeline,
     extract_suspicious_centroids,
     load_mesh,
@@ -33,7 +33,7 @@ from pipeline import (
 # Render PyTorch (GPU se disponibile, altrimenti CPU torch)
 try:
     import torch
-    from render_gpu import render_orthographic_topview_gpu
+    from spectrabreast.render_gpu import render_orthographic_topview_gpu
     TORCH_AVAILABLE = True
     CUDA_AVAILABLE  = torch.cuda.is_available()
 except ImportError:
