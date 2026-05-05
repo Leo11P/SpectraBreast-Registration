@@ -538,7 +538,7 @@ def render_orthographic_topview_gpu(
     # ── Backend 3: CPU trimesh BVH ───────────────────────────────────────────
     if fallback_cpu:
         print("[render_gpu] Backend: CPU trimesh BVH")
-        from Pipeline_registrazione_2D3D_new import render_orthographic_topview
+        from spectrabreast.pipeline import render_orthographic_topview
         return render_orthographic_topview(
             mesh, resolution_mm_per_px, margin_mm,
             xmin_override=xmin_override, xmax_override=xmax_override,
