@@ -8,9 +8,16 @@ trimesh>=4.0                     # caricamento mesh + ray casting
 pyyaml>=6.0                      # lettura config.yaml
 openpyxl>=3.1                    # export report Excel
 
-# Ray casting accelerato (raccomandato, opzionale)
+# Deep learning / GPU render
+torch>=2.0                       # ray casting GPU (PyTorch backend)
+
+# Ray casting accelerato (opzionale, più veloce di PyTorch)
+# cupy-cuda12x>=12.0             # decommenta se hai CUDA 12.x
+# cupy-cuda11x>=11.0             # decommenta se hai CUDA 11.x
+
+# Ray casting accelerato CPU (opzionale)
 # pyembree>=0.1                  # decommenta e installa separatamente se disponibile
 
 # Utility
-scipy>=1.11                      # usato internamente da trimesh
+scipy>=1.11                      # usato internamente da trimesh + interpolazioni
 rtree>=1.0                       # BVH fallback per trimesh
