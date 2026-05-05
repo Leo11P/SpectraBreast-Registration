@@ -26,7 +26,7 @@ SpectraBreast/
 ├── README.md
 ├── .gitignore
 └── data/
-    ├── input/                     # input files (not versioned)
+    ├── input/                     # input files (not versioned) -> example for first sample, 019!! ADJUST THE LAST NUMBER AND U GOOD
     │   ├── SB019_raw.hdr
     │   ├── SB019_raw.bin          # (or .raw / .img — same base name as .hdr)
     │   ├── surface_mesh.ply
@@ -100,7 +100,7 @@ render:
 | `5.0`  | ⚡ fast | low | quick test |
 | `2.0`  | ✅ good | medium | standard use |
 | `1.0`  | 🐢 slow | high | detailed analysis |
-| `0.5`  | 🐢🐢 very slow | very high | only with pyembree |
+| `0.5`  | 🐢🐢 very slow | very high | GPU NEEDED |
 
 ---
 
@@ -115,7 +115,7 @@ python main.py
 ### Command-line options
 
 ```bash
-# Use an alternative config (e.g. for a different sample)
+# Use an alternative config (e.g. for a different sample) -> refereed to SB020, sample nominated like that
 python main.py --config config_SB020.yaml
 
 # Override the sample name without editing the config
