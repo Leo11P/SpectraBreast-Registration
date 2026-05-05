@@ -1,0 +1,67 @@
+# =============================================================================
+# SPECTRABREAST — CONFIGURAZIONE PIPELINE
+# =============================================================================
+# Modifica questo file per cambiare i parametri senza toccare il codice.
+# Tutti i path sono relativi alla root del progetto.
+
+# -----------------------------------------------------------------------------
+# PATHS — Input / Output
+# -----------------------------------------------------------------------------
+paths:
+  hsi_hdr:      "data/input/SB020/SB020_001/SB020_raw.hdr"   # file ENVI .hdr
+  mesh:         "data/input/SAMPLE2/surface_mesh.ply"         # mesh 3D (.ply o .obj)
+  aruco_json:   "data/input/SAMPLE2/aruco_markers_3d.json"    # marker ArUco in metri
+  output_dir:   "data/output/SAMPLE2_30-04_0.3"               # cartella risultati
+
+# -----------------------------------------------------------------------------
+# NOME CAMPIONE — prefisso per tutti i file di output
+# -----------------------------------------------------------------------------
+sample_name: "SB020"
+
+# -----------------------------------------------------------------------------
+# REGISTRAZIONE
+# -----------------------------------------------------------------------------
+registration:
+  hsi_extraction_method: "mean"   # "mean" | "visible_band" | "pca"
+  aruco_dict:            "4X4_50" # dizionario ArUco: "4X4_50" | "5X5_100" ecc.
+  marker_side_mm:        6.8      # lato fisico del marker ArUco in mm
+
+  # SubPixel refinement post-detection (Punto 3): ±0.5-1 px -> ±0.05-0.2 px
+  use_subpix:     true
+  subpix_winsize: 5               # semi-finestra (5 -> 11x11)
+
+# -----------------------------------------------------------------------------
+# RENDER — ray casting ortografico (PyTorch, fully vectorized)
+# -----------------------------------------------------------------------------
+render:
+  resolution_mm_per_px:     0.3   # mm/px point cloud: 5.0=veloce, 0.5=fine
+  resolution_reg_mm_per_px: 0.5   # mm/px registrazione (piu grossolano = piu inlier RANSAC)
+                                  # Imposta uguale a resolution_mm_per_px per un solo render
+  margin_mm:            10.0      # padding attorno alla bounding box della mesh
+  # num_rays:           null      # lascia commentato/null per logica equivalente al CPU legacy
+  ray_chunk_size:       16384     # raggi per blocco (piu alto = meno overhead)
+  face_chunk_size:      2048      # triangoli per blocco dopo culling XY
+  sort_rays_for_culling: true     # ordina raggi in XY per culling piu efficace
+
+# -----------------------------------------------------------------------------
+# POINT CLOUD SPETTRALE
+# -----------------------------------------------------------------------------
+pointcloud:
+  border_px:        2        # margine di sicurezza sul bordo HSI (px)
+  reflectance_norm: true     # normalizza ogni spettro in [0,1]
+  pc_chunk_size:    100000   # punti per chunk in modalita streaming (ridurre se RAM limitata)
+
+# -----------------------------------------------------------------------------
+# EXPORT
+# -----------------------------------------------------------------------------
+export:
+  # --- Point cloud ---
+  save_pointcloud: true  # false = salta costruzione e salvataggio point cloud (risparmia tempo/RAM)
+  ply:           true    # .ply  per CloudCompare / MeshLab  (ignorato se save_pointcloud: false)
+  npy:           true    # .npz  per Python (ricarica veloce) (ignorato se save_pointcloud: false)
+  csv:           false   # .csv  (file grande, disabilitato di default)
+  csv_max_points: 500000 # punti massimi nel CSV (campionamento casuale se superati)
+
+  # --- Immagini ---
+  save_images: true      # false = non salva nessuna immagine
+                         #   (render topview/depth, turbo depth, registration overlay, coverage map)

@@ -1,0 +1,16 @@
+# SPECTRABREAST — Dipendenze Python
+# Installa con:  pip install -r requirements.txt
+
+# Core
+numpy>=1.24
+opencv-contrib-python>=4.8       # ArUco detection + homography
+trimesh>=4.0                     # caricamento mesh + ray casting
+pyyaml>=6.0                      # lettura config.yaml
+openpyxl>=3.1                    # export report Excel
+
+# Ray casting accelerato (raccomandato, opzionale)
+# pyembree>=0.1                  # decommenta e installa separatamente se disponibile
+
+# Utility
+scipy>=1.11                      # usato internamente da trimesh
+rtree>=1.0                       # BVH fallback per trimesh
