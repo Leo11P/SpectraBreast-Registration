@@ -197,6 +197,19 @@ def main():
     print("[Validate] Tutti i file di input trovati.\n")
 
  
+    if args.dry_run:
+        print("[Dry-run] Configurazione valida. Pipeline NON eseguita (--dry-run).")
+        sys.exit(0)
+ 
+    # Dizionario ArUco
+    aruco_key  = cfg['registration'].get('aruco_dict', '4X4_50')
+    aruco_dict = ARUCO_DICT_MAP.get(aruco_key, cv2.aruco.DICT_4X4_50)
+ 
+    # Crea output dir
+    os.makedirs(cfg['paths']['output_dir'], exist_ok=True)
+
+
+ 
     # ── BRANCH SWEEP ─────────────────────────────────────────────────────────
     # Se sweep.enabled e' true, esegue la pipeline su tutte le coppie definite
     # in config.yaml -> sweep.resolution_pairs e produce SOLO l'Excel riepilogo.
@@ -210,18 +223,6 @@ def main():
         )
         sys.exit(0)
     # ─────────────────────────────────────────────────────────────────────────
-
- 
-    if args.dry_run:
-        print("[Dry-run] Configurazione valida. Pipeline NON eseguita (--dry-run).")
-        sys.exit(0)
- 
-    # Dizionario ArUco
-    aruco_key  = cfg['registration'].get('aruco_dict', '4X4_50')
-    aruco_dict = ARUCO_DICT_MAP.get(aruco_key, cv2.aruco.DICT_4X4_50)
- 
-    # Crea output dir
-    os.makedirs(cfg['paths']['output_dir'], exist_ok=True)
  
     # ── Render PyTorch GPU (pre-calcola entrambi i render prima della pipeline) ──
     # main.py calcola SEMPRE entrambi i render su GPU qui, in modo che
