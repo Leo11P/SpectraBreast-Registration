@@ -67,7 +67,6 @@ export:
                          #   (render topview/depth, turbo depth, registration overlay, coverage map)
 
     
-    >>>>>>> sweep
 #-----------------------------------------------------------------------------
 #SWEEP — esecuzione batch su piu' coppie (res_reg, res_pc)
 #-----------------------------------------------------------------------------
