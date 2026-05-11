@@ -1,23 +1,22 @@
-# SPECTRABREAST — Dipendenze Python
-# Installa con:  pip install -r requirements.txt
+# SPECTRABREAST — Python dependencies
+# run uv pip install -r requirements.txt            #we working in UV
 
 # Core
 numpy>=1.24
 opencv-contrib-python>=4.8       # ArUco detection + homography
-trimesh>=4.0                     # caricamento mesh + ray casting
-pyyaml>=6.0                      # lettura config.yaml
+trimesh>=4.0                     # mesh uploading + ray casting
+pyyaml>=6.0                      # reag config.yaml
 openpyxl>=3.1                    # export report Excel
 
 # Deep learning / GPU render
 torch>=2.0                       # ray casting GPU (PyTorch backend)
 
-# Ray casting accelerato (opzionale, più veloce di PyTorch)
-# cupy-cuda12x>=12.0             # decommenta se hai CUDA 12.x
-# cupy-cuda11x>=11.0             # decommenta se hai CUDA 11.x
+# Ray casting accelerato (BETTER THAN PYTORCH)
+cupy-cuda12x>=12.0             
 
-# Ray casting accelerato CPU (opzionale)
-# pyembree>=0.1                  # decommenta e installa separatamente se disponibile
+# CPU faster raycasting
+# pyembree>=0.1                  #if GPU, not needed
 
 # Utility
-scipy>=1.11                      # usato internamente da trimesh + interpolazioni
-rtree>=1.0                       # BVH fallback per trimesh
+scipy>=1.11                      # needed for trimesh and interpolation
+rtree>=1.0                       # BVH fallback for trimesh

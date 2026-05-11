@@ -8,9 +8,15 @@ e produce UN SOLO file Excel riepilogativo nella output_dir.
 Durante lo sweep:
   - save_pointcloud  -> forzato False
   - save_images      -> forzato False
+<<<<<<< HEAD
   - Excel per-run    -> NON salvato (lo sopprimiamo passando un output_dir
                         diverso solo per le run e non emettendo l'xlsx)
   - SOLO l'Excel riepilogativo finale viene scritto.
+=======
+  - Excel per-run    -> run_full_pipeline lo scrive in una subdir temporanea
+                        _sweep_tmp/run_N/ che viene rimossa al termine dello sweep
+  - SOLO l'Excel riepilogativo finale viene scritto in output_dir.
+>>>>>>> sweep
 
 Excel riepilogo (1 riga per coppia):
   res_reg_mm_pix | res_pc_mm_pix
@@ -27,6 +33,10 @@ Excel riepilogo (1 riga per coppia):
 from __future__ import annotations
 
 import os
+<<<<<<< HEAD
+=======
+import shutil
+>>>>>>> sweep
 import time
 import traceback
 from typing import Optional
@@ -35,12 +45,18 @@ import numpy as np
 
 from spectrabreast.pipeline import run_full_pipeline, load_mesh
 
+<<<<<<< HEAD
 try:
     import torch
     from render_gpu import render_orthographic_topview_gpu
     TORCH_AVAILABLE = True
 except ImportError:
     TORCH_AVAILABLE = False
+=======
+# render_orthographic_topview_gpu NON viene importato qui:
+# sweep.py lo riceve come parametro da main.py (che lo importa già correttamente).
+TORCH_AVAILABLE = True  # placeholder; la disponibilità reale è gestita da main.py
+>>>>>>> sweep
 
 
 # =============================================================================
@@ -132,10 +148,21 @@ def _run_single_pair(
     res_pc: float,
     torch_device: Optional[str],
     use_torch_render: bool,
+<<<<<<< HEAD
     mesh,  # mesh già caricata (riusata tra le run -> evita I/O ripetuto)
 ) -> dict:
     """
     Esegue render + run_full_pipeline per una coppia, senza salvare nulla.
+=======
+    mesh,           # mesh già caricata (riusata tra le run -> evita I/O ripetuto)
+    tmp_dir: str,   # subdir temporanea dedicata a questa run
+    render_fn,      # render_orthographic_topview_gpu passata da main.py (o None)
+) -> dict:
+    """
+    Esegue render + run_full_pipeline per una coppia.
+    run_full_pipeline scrive il suo Excel per-run in tmp_dir (che viene
+    rimossa dal chiamante al termine dello sweep).
+>>>>>>> sweep
     Ritorna un dict con le metriche aggregate per l'Excel riepilogo.
     """
     print(f"\n{'=' * 68}")
@@ -143,6 +170,10 @@ def _run_single_pair(
     print(f"{'=' * 68}")
     t0 = time.time()
 
+<<<<<<< HEAD
+=======
+    os.makedirs(tmp_dir, exist_ok=True)
+>>>>>>> sweep
     dual = abs(res_reg - res_pc) > 1e-6
 
     # ── Render GPU (pre-calcolato, identico a main.py) ──────────────────────
@@ -154,7 +185,11 @@ def _run_single_pair(
         print(f"[Sweep][Render PC] {res_pc} mm/px su {torch_device}...")
         t0r = time.time()
         render_rgb_pc, depth_map_pc, xyz_map_pc, origin_xy_pc, res_out_pc = \
+<<<<<<< HEAD
             render_orthographic_topview_gpu(
+=======
+            render_fn(
+>>>>>>> sweep
                 mesh,
                 resolution_mm_per_px=res_pc,
                 margin_mm=cfg['render']['margin_mm'],
@@ -169,7 +204,11 @@ def _run_single_pair(
             print(f"[Sweep][Render REG] {res_reg} mm/px su {torch_device}...")
             t0r = time.time()
             render_rgb_reg, depth_map_reg, xyz_map_reg, origin_xy_reg, res_out_reg = \
+<<<<<<< HEAD
                 render_orthographic_topview_gpu(
+=======
+                render_fn(
+>>>>>>> sweep
                     mesh,
                     resolution_mm_per_px=res_reg,
                     margin_mm=cfg['render']['margin_mm'],
@@ -182,12 +221,22 @@ def _run_single_pair(
             precomputed_render_reg = precomputed_render
             print("[Sweep][Render] reg == pc — render condiviso.")
 
+<<<<<<< HEAD
     # ── Pipeline (TUTTI i save forzati a False) ─────────────────────────────
+=======
+    # ── Pipeline ─────────────────────────────────────────────────────────────
+    # output_dir = tmp_dir: run_full_pipeline scrive qui il suo Excel per-run
+    # (Step 7 della pipeline è sempre eseguito). Tutto il resto è disabilitato.
+>>>>>>> sweep
     result = run_full_pipeline(
         hsi_hdr_path             = cfg['paths']['hsi_hdr'],
         mesh_path                = cfg['paths']['mesh'],
         aruco_json_path          = cfg['paths']['aruco_json'],
+<<<<<<< HEAD
         output_dir               = cfg['paths']['output_dir'],  # non usato (save=False)
+=======
+        output_dir               = tmp_dir,              # <-- subdir temporanea
+>>>>>>> sweep
         hsi_extraction_method    = cfg['registration']['hsi_extraction_method'],
         aruco_dict_type          = aruco_dict_cv,
         suspicious_pixels_hsi    = None,
@@ -427,7 +476,11 @@ def _write_summary_xlsx(rows: list[dict], output_path: str, sample_name: str) ->
 # =============================================================================
 
 def run_sweep(cfg: dict, aruco_dict_cv: int, torch_device: Optional[str],
+<<<<<<< HEAD
               use_torch_render: bool) -> str:
+=======
+              use_torch_render: bool, render_fn=None) -> str:
+>>>>>>> sweep
     """
     Esegue lo sweep completo e ritorna il path dell'Excel riepilogo.
 
@@ -441,6 +494,13 @@ def run_sweep(cfg: dict, aruco_dict_cv: int, torch_device: Optional[str],
         Device torch (es. 'cuda', 'cpu') — None se torch non disponibile.
     use_torch_render : bool
         True se il render GPU/torch è disponibile.
+<<<<<<< HEAD
+=======
+    render_fn : callable | None
+        render_orthographic_topview_gpu importata da main.py.
+        Se None e use_torch_render=True, run_full_pipeline farà il render
+        internamente (fallback CPU).
+>>>>>>> sweep
 
     Returns
     -------
@@ -457,18 +517,39 @@ def run_sweep(cfg: dict, aruco_dict_cv: int, torch_device: Optional[str],
               f"res_pc = {p:>6.3f} mm/px")
     print()
 
+<<<<<<< HEAD
     # Mesh caricata UNA volta sola (ottimizzazione: evita I/O ripetuto)
+=======
+    # Crea la output dir principale e la cartella temporanea per le run
+    base_out = cfg['paths']['output_dir']
+    os.makedirs(base_out, exist_ok=True)
+    sweep_tmp_root = os.path.join(base_out, '_sweep_tmp')
+    os.makedirs(sweep_tmp_root, exist_ok=True)
+    print(f"[Sweep] Subdir temporanee in: {sweep_tmp_root}")
+    print(f"[Sweep] (verranno eliminate al termine dello sweep)\n")
+
+    # Mesh caricata UNA volta sola per tutte le run
+>>>>>>> sweep
     if use_torch_render:
         print(f"[Sweep] Carico mesh: {cfg['paths']['mesh']}")
         mesh = load_mesh(cfg['paths']['mesh'], scale_m_to_mm=True)
     else:
         mesh = None  # run_full_pipeline farà il fallback CPU internamente
 
+<<<<<<< HEAD
     # Crea la output dir per l'Excel riepilogo
     os.makedirs(cfg['paths']['output_dir'], exist_ok=True)
 
     rows: list[dict] = []
     for i, (res_reg, res_pc) in enumerate(pairs):
+=======
+    rows: list[dict] = []
+    for i, (res_reg, res_pc) in enumerate(pairs):
+        # Subdir dedicata a questa run (run_full_pipeline scrive qui il suo xlsx)
+        tag = f"reg{str(res_reg).replace('.','p')}_pc{str(res_pc).replace('.','p')}"
+        tmp_dir = os.path.join(sweep_tmp_root, f"run{i+1:02d}_{tag}")
+
+>>>>>>> sweep
         try:
             row = _run_single_pair(
                 cfg=cfg,
@@ -478,21 +559,43 @@ def run_sweep(cfg: dict, aruco_dict_cv: int, torch_device: Optional[str],
                 torch_device=torch_device,
                 use_torch_render=use_torch_render,
                 mesh=mesh,
+<<<<<<< HEAD
+=======
+                tmp_dir=tmp_dir,
+                render_fn=render_fn,
+>>>>>>> sweep
             )
         except Exception as e:
             print(f"\n[Sweep] ERRORE su coppia ({res_reg}, {res_pc}): {e}")
             traceback.print_exc()
+<<<<<<< HEAD
             row = _empty_row(res_reg, res_pc, status=f'error: {type(e).__name__}')
+=======
+            row = _empty_row(res_reg, res_pc, status=f'error: {type(e).__name__}: {e}')
+>>>>>>> sweep
 
         rows.append(row)
         print(f"\n[Sweep] Progresso: {i + 1}/{len(pairs)} run completate.\n")
 
+<<<<<<< HEAD
     # Scrittura Excel riepilogo
     sample = cfg['sample_name']
     out_path = os.path.join(
         cfg['paths']['output_dir'],
         f"{sample}_sweep_resolution_summary.xlsx"
     )
+=======
+    # Rimozione cartella temporanea (tutto il contenuto)
+    try:
+        shutil.rmtree(sweep_tmp_root)
+        print(f"[Sweep] Cartella temporanea rimossa: {sweep_tmp_root}")
+    except Exception as e:
+        print(f"[Sweep] Avviso: impossibile rimuovere {sweep_tmp_root}: {e}")
+
+    # Scrittura Excel riepilogo
+    sample = cfg['sample_name']
+    out_path = os.path.join(base_out, f"{sample}_sweep_resolution_summary.xlsx")
+>>>>>>> sweep
     _write_summary_xlsx(rows, out_path, sample_name=sample)
 
     # Riepilogo a video

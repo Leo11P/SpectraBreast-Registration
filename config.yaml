@@ -65,6 +65,9 @@ export:
   # --- Immagini ---
   save_images: true      # false = non salva nessuna immagine
                          #   (render topview/depth, turbo depth, registration overlay, coverage map)
+
+    
+    >>>>>>> sweep
 #-----------------------------------------------------------------------------
 #SWEEP — esecuzione batch su piu' coppie (res_reg, res_pc)
 #-----------------------------------------------------------------------------
@@ -75,10 +78,10 @@ export:
 #<output_dir>/<sample_name>_sweep_resolution_summary.xlsx
 #(i flag export.save_pointcloud / export.save_images vengono forzati a false).
 sweep:
-  enabled: true        # true = attiva sweep; false = pipeline singola normale
+  enabled: false        # true = attiva sweep; false = pipeline singola normale
   resolution_pairs:     # lista di coppie [res_reg_mm_per_px, res_pc_mm_per_px]
   - [1.0, 0.5]
   - [0.7, 0.4]
-  - [0.5, 0.3]
-  - [0.5, 0.3]
+  - [0.5, 0.5]
+  - [0.5, 0.4]
   - [0.5, 0.3]
