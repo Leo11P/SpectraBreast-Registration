@@ -21,7 +21,7 @@ import time
 import cv2
 import numpy as np
 import yaml
- 
+from sweep import run_sweep
 from spectrabreast.pipeline import (
     run_full_pipeline,
     extract_suspicious_centroids,
@@ -195,6 +195,22 @@ def main():
         print("\n[Validate] ERRORE: uno o più file mancanti. Controlla config.yaml.")
         sys.exit(1)
     print("[Validate] Tutti i file di input trovati.\n")
+
+ 
+    # ── BRANCH SWEEP ─────────────────────────────────────────────────────────
+    # Se sweep.enabled e' true, esegue la pipeline su tutte le coppie definite
+    # in config.yaml -> sweep.resolution_pairs e produce SOLO l'Excel riepilogo.
+    if cfg.get('sweep', {}).get('enabled', False):
+        print("\n[Main] Modalita' SWEEP attiva — ignoro le risoluzioni singole.")
+        run_sweep(
+            cfg              = cfg,
+            aruco_dict_cv    = aruco_dict,
+            torch_device     = torch_device,
+            use_torch_render = use_torch_render,
+        )
+        sys.exit(0)
+    # ─────────────────────────────────────────────────────────────────────────
+
  
     if args.dry_run:
         print("[Dry-run] Configurazione valida. Pipeline NON eseguita (--dry-run).")
