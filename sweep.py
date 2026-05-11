@@ -5,18 +5,20 @@ Esegue la pipeline di registrazione su una lista di coppie
 (resolution_reg_mm_per_px, resolution_pc_mm_per_px) lette da config.yaml
 e produce UN SOLO file Excel riepilogativo nella output_dir.
 
+Ottimizzazione render (NEW):
+  Prima di iniziare il loop sulle coppie, vengono raccolti tutti i valori
+  UNICI di risoluzione (sia da res_reg che da res_pc) e per ognuno viene
+  calcolato UN solo render GPU. Le run dello sweep poi riusano i render
+  dalla cache, evitando di ricalcolare lo stesso render piu' volte quando
+  piu' coppie condividono lo stesso valore (es. [0.5, 0.5], [0.5, 0.4],
+  [0.5, 0.3] -> il render a 0.5 mm/px viene fatto UNA volta sola).
+
 Durante lo sweep:
   - save_pointcloud  -> forzato False
   - save_images      -> forzato False
-<<<<<<< HEAD
-  - Excel per-run    -> NON salvato (lo sopprimiamo passando un output_dir
-                        diverso solo per le run e non emettendo l'xlsx)
-  - SOLO l'Excel riepilogativo finale viene scritto.
-=======
   - Excel per-run    -> run_full_pipeline lo scrive in una subdir temporanea
                         _sweep_tmp/run_N/ che viene rimossa al termine dello sweep
   - SOLO l'Excel riepilogativo finale viene scritto in output_dir.
->>>>>>> sweep
 
 Excel riepilogo (1 riga per coppia):
   res_reg_mm_pix | res_pc_mm_pix
@@ -33,10 +35,7 @@ Excel riepilogo (1 riga per coppia):
 from __future__ import annotations
 
 import os
-<<<<<<< HEAD
-=======
 import shutil
->>>>>>> sweep
 import time
 import traceback
 from typing import Optional
@@ -45,18 +44,9 @@ import numpy as np
 
 from spectrabreast.pipeline import run_full_pipeline, load_mesh
 
-<<<<<<< HEAD
-try:
-    import torch
-    from render_gpu import render_orthographic_topview_gpu
-    TORCH_AVAILABLE = True
-except ImportError:
-    TORCH_AVAILABLE = False
-=======
 # render_orthographic_topview_gpu NON viene importato qui:
-# sweep.py lo riceve come parametro da main.py (che lo importa già correttamente).
-TORCH_AVAILABLE = True  # placeholder; la disponibilità reale è gestita da main.py
->>>>>>> sweep
+# sweep.py lo riceve come parametro da main.py (che lo importa gia' correttamente).
+TORCH_AVAILABLE = True  # placeholder; la disponibilita' reale e' gestita da main.py
 
 
 # =============================================================================
@@ -65,7 +55,7 @@ TORCH_AVAILABLE = True  # placeholder; la disponibilità reale è gestita da mai
 
 def _stats(arr) -> tuple[float, float, int]:
     """Ritorna (mean, median, n_valid) ignorando NaN.
-    Se arr è None o tutto NaN, ritorna (nan, nan, 0)."""
+    Se arr e' None o tutto NaN, ritorna (nan, nan, 0)."""
     if arr is None:
         return float('nan'), float('nan'), 0
     a = np.asarray(arr, dtype=np.float64)
@@ -103,7 +93,7 @@ def parse_pairs(sweep_cfg: dict) -> list[tuple[float, float]]:
           - [0.7, 0.4]
           - [1.0, 0.5]
 
-    Lancia ValueError se il formato è invalido o la lista è vuota.
+    Lancia ValueError se il formato e' invalido o la lista e' vuota.
     """
     raw = sweep_cfg.get('resolution_pairs')
     if raw is None:
@@ -138,7 +128,98 @@ def parse_pairs(sweep_cfg: dict) -> list[tuple[float, float]]:
 
 
 # =============================================================================
-# Singola run dello sweep (NESSUN salvataggio: solo metriche)
+# Cache dei render: una sola volta per ogni valore unico di risoluzione
+# =============================================================================
+
+# Tolleranza per considerare due risoluzioni "uguali" (evita problemi
+# di confronto float). 1e-6 mm/px e' largamente piu' fine di qualunque
+# uso pratico.
+_RES_TOL = 1e-6
+
+
+def _quantize_res(r: float) -> float:
+    """Arrotonda la risoluzione per usarla come chiave robusta del dict.
+    9 cifre decimali coprono qualunque caso pratico (mm/px)."""
+    return round(float(r), 9)
+
+
+def _collect_unique_resolutions(pairs: list[tuple[float, float]]) -> list[float]:
+    """Estrae i valori unici di risoluzione (sia res_reg che res_pc) dalle coppie.
+
+    Ordina dal piu' grossolano al piu' fine cosi' i primi render (rapidi)
+    danno subito feedback all'utente."""
+    seen: dict[float, float] = {}  # quantized -> originale
+    for r, p in pairs:
+        for v in (r, p):
+            k = _quantize_res(v)
+            if k not in seen:
+                seen[k] = v
+    # ordinamento decrescente: prima le risoluzioni grossolane (render veloci)
+    return sorted(seen.values(), reverse=True)
+
+
+def _precompute_renders(
+    mesh,
+    unique_resolutions: list[float],
+    margin_mm: float,
+    torch_device: Optional[str],
+    render_fn,
+) -> dict[float, tuple]:
+    """
+    Pre-calcola un render GPU per ogni risoluzione unica.
+
+    Returns
+    -------
+    cache : dict[float, tuple]
+        chiave = risoluzione quantizzata (vedi _quantize_res)
+        valore = (render_rgb, depth_map, xyz_map, origin_xy, res_out)
+    """
+    if render_fn is None:
+        raise RuntimeError(
+            "render_fn e' None: impossibile pre-calcolare i render. "
+            "Passa render_orthographic_topview_gpu a run_sweep()."
+        )
+
+    cache: dict[float, tuple] = {}
+    n = len(unique_resolutions)
+    print(f"\n[Sweep][Cache] Pre-calcolo di {n} render unici "
+          f"(invece di {2*n} potenziali render ridondanti)...")
+
+    total_t0 = time.time()
+    for i, res in enumerate(unique_resolutions):
+        key = _quantize_res(res)
+        print(f"\n[Sweep][Cache] Render {i+1}/{n}: res = {res} mm/px su {torch_device}")
+        t0 = time.time()
+        render_tuple = render_fn(
+            mesh,
+            resolution_mm_per_px=res,
+            margin_mm=margin_mm,
+            device=torch_device,
+        )
+        cache[key] = render_tuple
+        print(f"[Sweep][Cache] Render {i+1}/{n} completato in {time.time()-t0:.1f}s")
+
+    print(f"\n[Sweep][Cache] Tutti i {n} render pronti in {time.time()-total_t0:.1f}s")
+    return cache
+
+
+def _get_render(cache: dict[float, tuple], res: float) -> tuple:
+    """Recupera un render dalla cache. Lancia KeyError se mancante."""
+    key = _quantize_res(res)
+    if key not in cache:
+        # fallback: cerca una chiave entro tolleranza (per sicurezza)
+        for k, v in cache.items():
+            if abs(k - key) < _RES_TOL:
+                return v
+        raise KeyError(
+            f"Render per risoluzione {res} mm/px non trovato in cache. "
+            f"Chiavi disponibili: {sorted(cache.keys())}"
+        )
+    return cache[key]
+
+
+# =============================================================================
+# Singola run dello sweep (NESSUN render: usa la cache)
 # =============================================================================
 
 def _run_single_pair(
@@ -148,21 +229,13 @@ def _run_single_pair(
     res_pc: float,
     torch_device: Optional[str],
     use_torch_render: bool,
-<<<<<<< HEAD
-    mesh,  # mesh già caricata (riusata tra le run -> evita I/O ripetuto)
+    tmp_dir: str,           # subdir temporanea dedicata a questa run
+    render_cache: Optional[dict[float, tuple]],  # cache dei render pre-calcolati
 ) -> dict:
     """
-    Esegue render + run_full_pipeline per una coppia, senza salvare nulla.
-=======
-    mesh,           # mesh già caricata (riusata tra le run -> evita I/O ripetuto)
-    tmp_dir: str,   # subdir temporanea dedicata a questa run
-    render_fn,      # render_orthographic_topview_gpu passata da main.py (o None)
-) -> dict:
-    """
-    Esegue render + run_full_pipeline per una coppia.
+    Esegue run_full_pipeline per una coppia, riusando i render dalla cache.
     run_full_pipeline scrive il suo Excel per-run in tmp_dir (che viene
     rimossa dal chiamante al termine dello sweep).
->>>>>>> sweep
     Ritorna un dict con le metriche aggregate per l'Excel riepilogo.
     """
     print(f"\n{'=' * 68}")
@@ -170,73 +243,32 @@ def _run_single_pair(
     print(f"{'=' * 68}")
     t0 = time.time()
 
-<<<<<<< HEAD
-=======
     os.makedirs(tmp_dir, exist_ok=True)
->>>>>>> sweep
     dual = abs(res_reg - res_pc) > 1e-6
 
-    # ── Render GPU (pre-calcolato, identico a main.py) ──────────────────────
+    # ── Render: recupero dalla cache (NIENTE ricalcolo) ─────────────────────
     precomputed_render = None
     precomputed_render_reg = None
 
-    if use_torch_render:
-        # PC (risoluzione fine)
-        print(f"[Sweep][Render PC] {res_pc} mm/px su {torch_device}...")
-        t0r = time.time()
-        render_rgb_pc, depth_map_pc, xyz_map_pc, origin_xy_pc, res_out_pc = \
-<<<<<<< HEAD
-            render_orthographic_topview_gpu(
-=======
-            render_fn(
->>>>>>> sweep
-                mesh,
-                resolution_mm_per_px=res_pc,
-                margin_mm=cfg['render']['margin_mm'],
-                device=torch_device,
-            )
-        print(f"[Sweep][Render PC] done in {time.time() - t0r:.1f}s")
-        precomputed_render = (render_rgb_pc, depth_map_pc, xyz_map_pc,
-                              origin_xy_pc, res_out_pc)
+    if use_torch_render and render_cache is not None:
+        precomputed_render = _get_render(render_cache, res_pc)
+        print(f"[Sweep][Cache] Render PC ({res_pc} mm/px) recuperato dalla cache.")
 
-        # REG (risoluzione grossolana se diversa, altrimenti riusa)
         if dual:
-            print(f"[Sweep][Render REG] {res_reg} mm/px su {torch_device}...")
-            t0r = time.time()
-            render_rgb_reg, depth_map_reg, xyz_map_reg, origin_xy_reg, res_out_reg = \
-<<<<<<< HEAD
-                render_orthographic_topview_gpu(
-=======
-                render_fn(
->>>>>>> sweep
-                    mesh,
-                    resolution_mm_per_px=res_reg,
-                    margin_mm=cfg['render']['margin_mm'],
-                    device=torch_device,
-                )
-            print(f"[Sweep][Render REG] done in {time.time() - t0r:.1f}s")
-            precomputed_render_reg = (render_rgb_reg, depth_map_reg,
-                                      xyz_map_reg, origin_xy_reg, res_out_reg)
+            precomputed_render_reg = _get_render(render_cache, res_reg)
+            print(f"[Sweep][Cache] Render REG ({res_reg} mm/px) recuperato dalla cache.")
         else:
             precomputed_render_reg = precomputed_render
-            print("[Sweep][Render] reg == pc — render condiviso.")
+            print("[Sweep][Cache] reg == pc — render condiviso (stessa entry cache).")
 
-<<<<<<< HEAD
-    # ── Pipeline (TUTTI i save forzati a False) ─────────────────────────────
-=======
     # ── Pipeline ─────────────────────────────────────────────────────────────
     # output_dir = tmp_dir: run_full_pipeline scrive qui il suo Excel per-run
-    # (Step 7 della pipeline è sempre eseguito). Tutto il resto è disabilitato.
->>>>>>> sweep
+    # (Step 7 della pipeline e' sempre eseguito). Tutto il resto e' disabilitato.
     result = run_full_pipeline(
         hsi_hdr_path             = cfg['paths']['hsi_hdr'],
         mesh_path                = cfg['paths']['mesh'],
         aruco_json_path          = cfg['paths']['aruco_json'],
-<<<<<<< HEAD
-        output_dir               = cfg['paths']['output_dir'],  # non usato (save=False)
-=======
         output_dir               = tmp_dir,              # <-- subdir temporanea
->>>>>>> sweep
         hsi_extraction_method    = cfg['registration']['hsi_extraction_method'],
         aruco_dict_type          = aruco_dict_cv,
         suspicious_pixels_hsi    = None,
@@ -368,7 +400,7 @@ def _empty_row(res_reg: float, res_pc: float, status: str) -> dict:
 def _write_summary_xlsx(rows: list[dict], output_path: str, sample_name: str) -> None:
     """Scrive l'Excel riepilogo dello sweep.
 
-    Usa openpyxl direttamente (zero dipendenze in più: il pipeline lo usa già)."""
+    Usa openpyxl direttamente (zero dipendenze in piu': il pipeline lo usa gia')."""
     from openpyxl import Workbook
     from openpyxl.styles import Font, PatternFill, Alignment, Border, Side
     from openpyxl.utils import get_column_letter
@@ -476,31 +508,29 @@ def _write_summary_xlsx(rows: list[dict], output_path: str, sample_name: str) ->
 # =============================================================================
 
 def run_sweep(cfg: dict, aruco_dict_cv: int, torch_device: Optional[str],
-<<<<<<< HEAD
-              use_torch_render: bool) -> str:
-=======
               use_torch_render: bool, render_fn=None) -> str:
->>>>>>> sweep
     """
     Esegue lo sweep completo e ritorna il path dell'Excel riepilogo.
+
+    Ottimizzazione: prima del loop sulle coppie, pre-calcola UN render GPU
+    per ogni valore UNICO di risoluzione presente nelle coppie del YAML.
+    Le run dello sweep poi pescano i render dalla cache senza ricalcolarli.
 
     Parameters
     ----------
     cfg : dict
-        Config completo (già passato da load_config + resolve_paths).
+        Config completo (gia' passato da load_config + resolve_paths).
     aruco_dict_cv : int
         Costante cv2.aruco.DICT_* risolta da main.py.
     torch_device : str | None
         Device torch (es. 'cuda', 'cpu') — None se torch non disponibile.
     use_torch_render : bool
-        True se il render GPU/torch è disponibile.
-<<<<<<< HEAD
-=======
+        True se il render GPU/torch e' disponibile.
     render_fn : callable | None
         render_orthographic_topview_gpu importata da main.py.
-        Se None e use_torch_render=True, run_full_pipeline farà il render
-        internamente (fallback CPU).
->>>>>>> sweep
+        Se None e use_torch_render=True, run_full_pipeline fara' il render
+        internamente (fallback CPU) — NB: in questo caso la cache e' disabilitata
+        e ogni run rifara' il render. Per beneficiare della cache passa render_fn.
 
     Returns
     -------
@@ -517,9 +547,6 @@ def run_sweep(cfg: dict, aruco_dict_cv: int, torch_device: Optional[str],
               f"res_pc = {p:>6.3f} mm/px")
     print()
 
-<<<<<<< HEAD
-    # Mesh caricata UNA volta sola (ottimizzazione: evita I/O ripetuto)
-=======
     # Crea la output dir principale e la cartella temporanea per le run
     base_out = cfg['paths']['output_dir']
     os.makedirs(base_out, exist_ok=True)
@@ -528,28 +555,39 @@ def run_sweep(cfg: dict, aruco_dict_cv: int, torch_device: Optional[str],
     print(f"[Sweep] Subdir temporanee in: {sweep_tmp_root}")
     print(f"[Sweep] (verranno eliminate al termine dello sweep)\n")
 
-    # Mesh caricata UNA volta sola per tutte le run
->>>>>>> sweep
-    if use_torch_render:
+    # ── Pre-calcolo dei render unici ─────────────────────────────────────────
+    render_cache: Optional[dict[float, tuple]] = None
+    mesh = None
+
+    if use_torch_render and render_fn is not None:
         print(f"[Sweep] Carico mesh: {cfg['paths']['mesh']}")
         mesh = load_mesh(cfg['paths']['mesh'], scale_m_to_mm=True)
+
+        unique_res = _collect_unique_resolutions(pairs)
+        print(f"\n[Sweep] Risoluzioni uniche da pre-calcolare: "
+              f"{[f'{r}' for r in unique_res]}")
+        print(f"[Sweep] -> {len(unique_res)} render invece di "
+              f"{2 * len(pairs)} (risparmio: "
+              f"{2*len(pairs) - len(unique_res)} render evitati)")
+
+        render_cache = _precompute_renders(
+            mesh=mesh,
+            unique_resolutions=unique_res,
+            margin_mm=cfg['render']['margin_mm'],
+            torch_device=torch_device,
+            render_fn=render_fn,
+        )
     else:
-        mesh = None  # run_full_pipeline farà il fallback CPU internamente
+        print("[Sweep] AVVISO: render_fn non disponibile -> cache disabilitata.")
+        print("[Sweep] Ogni run rifara' il render internamente (fallback CPU).")
 
-<<<<<<< HEAD
-    # Crea la output dir per l'Excel riepilogo
-    os.makedirs(cfg['paths']['output_dir'], exist_ok=True)
-
-    rows: list[dict] = []
-    for i, (res_reg, res_pc) in enumerate(pairs):
-=======
+    # ── Loop sulle coppie ────────────────────────────────────────────────────
     rows: list[dict] = []
     for i, (res_reg, res_pc) in enumerate(pairs):
         # Subdir dedicata a questa run (run_full_pipeline scrive qui il suo xlsx)
         tag = f"reg{str(res_reg).replace('.','p')}_pc{str(res_pc).replace('.','p')}"
         tmp_dir = os.path.join(sweep_tmp_root, f"run{i+1:02d}_{tag}")
 
->>>>>>> sweep
         try:
             row = _run_single_pair(
                 cfg=cfg,
@@ -558,33 +596,17 @@ def run_sweep(cfg: dict, aruco_dict_cv: int, torch_device: Optional[str],
                 res_pc=res_pc,
                 torch_device=torch_device,
                 use_torch_render=use_torch_render,
-                mesh=mesh,
-<<<<<<< HEAD
-=======
                 tmp_dir=tmp_dir,
-                render_fn=render_fn,
->>>>>>> sweep
+                render_cache=render_cache,
             )
         except Exception as e:
             print(f"\n[Sweep] ERRORE su coppia ({res_reg}, {res_pc}): {e}")
             traceback.print_exc()
-<<<<<<< HEAD
-            row = _empty_row(res_reg, res_pc, status=f'error: {type(e).__name__}')
-=======
             row = _empty_row(res_reg, res_pc, status=f'error: {type(e).__name__}: {e}')
->>>>>>> sweep
 
         rows.append(row)
         print(f"\n[Sweep] Progresso: {i + 1}/{len(pairs)} run completate.\n")
 
-<<<<<<< HEAD
-    # Scrittura Excel riepilogo
-    sample = cfg['sample_name']
-    out_path = os.path.join(
-        cfg['paths']['output_dir'],
-        f"{sample}_sweep_resolution_summary.xlsx"
-    )
-=======
     # Rimozione cartella temporanea (tutto il contenuto)
     try:
         shutil.rmtree(sweep_tmp_root)
@@ -595,7 +617,6 @@ def run_sweep(cfg: dict, aruco_dict_cv: int, torch_device: Optional[str],
     # Scrittura Excel riepilogo
     sample = cfg['sample_name']
     out_path = os.path.join(base_out, f"{sample}_sweep_resolution_summary.xlsx")
->>>>>>> sweep
     _write_summary_xlsx(rows, out_path, sample_name=sample)
 
     # Riepilogo a video
