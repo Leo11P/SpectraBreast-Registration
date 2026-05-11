@@ -220,6 +220,7 @@ def main():
             aruco_dict_cv    = aruco_dict,
             torch_device     = torch_device,
             use_torch_render = use_torch_render,
+            render_fn        = render_orthographic_topview_gpu if use_torch_render else None,  # <-- AGGIUNGI
         )
         sys.exit(0)
     # ─────────────────────────────────────────────────────────────────────────
