@@ -33,7 +33,7 @@ from typing import Optional
 
 import numpy as np
 
-from pipeline import run_full_pipeline, load_mesh
+from spectrabreast.pipeline import run_full_pipeline, load_mesh
 
 try:
     import torch
