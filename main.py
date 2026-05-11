@@ -202,19 +202,7 @@ def main():
     if args.dry_run:
         print("[Dry-run] Configurazione valida. Pipeline NON eseguita (--dry-run).")
         sys.exit(0)
-    # ── BRANCH SWEEP ─────────────────────────────────────────────────────────
-    # Se sweep.enabled e' true, esegue la pipeline su tutte le coppie definite
-    # in config.yaml -> sweep.resolution_pairs e produce SOLO l'Excel riepilogo.
-    if cfg.get('sweep', {}).get('enabled', False):
-        print("\n[Main] Modalita' SWEEP attiva — ignoro le risoluzioni singole.")
-        run_sweep(
-            cfg              = cfg,
-            aruco_dict_cv    = aruco_dict,
-            torch_device     = torch_device,
-            use_torch_render = use_torch_render,
-        )
-        sys.exit(0)
-    # ─────────────────────────────────────────────────────────────────────────  
+     
     # Dizionario ArUco
     aruco_key  = cfg['registration'].get('aruco_dict', '4X4_50')
     aruco_dict = ARUCO_DICT_MAP.get(aruco_key, cv2.aruco.DICT_4X4_50)
