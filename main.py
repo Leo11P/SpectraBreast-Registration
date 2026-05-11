@@ -32,17 +32,18 @@ from spectrabreast.pipeline import (
     save_turbo_render,
 )
  
-# Render PyTorch (GPU se disponibile, altrimenti CPU torch)
+# Render PyTorch (GPU se disponibile, altrimenti CPU torch) 
+render_orthographic_topview_gpu = None
+
 try:
     import torch
     from spectrabreast.render_gpu import render_orthographic_topview_gpu
     TORCH_AVAILABLE = True
     CUDA_AVAILABLE  = torch.cuda.is_available()
-except ImportError:
+except Exception as e:
+    print(f"[Init] ERRORE import torch/render_gpu: {type(e).__name__}: {e}")
     TORCH_AVAILABLE = False
     CUDA_AVAILABLE  = False
- 
- 
 # =============================================================================
 # Caricamento config
 # =============================================================================
@@ -202,27 +203,31 @@ def main():
     if args.dry_run:
         print("[Dry-run] Configurazione valida. Pipeline NON eseguita (--dry-run).")
         sys.exit(0)
-     
-    # Dizionario ArUco
+   
+   # Dizionario ArUco
     aruco_key  = cfg['registration'].get('aruco_dict', '4X4_50')
     aruco_dict = ARUCO_DICT_MAP.get(aruco_key, cv2.aruco.DICT_4X4_50)
  
     # Crea output dir
     os.makedirs(cfg['paths']['output_dir'], exist_ok=True)
 
-
- 
-    # ── BRANCH SWEEP ─────────────────────────────────────────────────────────
+        # ── BRANCH SWEEP ─────────────────────────────────────────────────────────
+    
     # Se sweep.enabled e' true, esegue la pipeline su tutte le coppie definite
     # in config.yaml -> sweep.resolution_pairs e produce SOLO l'Excel riepilogo.
     if cfg.get('sweep', {}).get('enabled', False):
         print("\n[Main] Modalita' SWEEP attiva — ignoro le risoluzioni singole.")
+
+        # Debug: verifica che render_fn non sia None
+        _render_fn = render_orthographic_topview_gpu if use_torch_render else None
+        print(f"[Main] render_fn = {_render_fn}")   # deve stampare la funzione, non None
+
         run_sweep(
             cfg              = cfg,
             aruco_dict_cv    = aruco_dict,
             torch_device     = torch_device,
             use_torch_render = use_torch_render,
-            render_fn        = render_orthographic_topview_gpu if use_torch_render else None,  # <-- AGGIUNGI
+            render_fn        = _render_fn,
         )
         sys.exit(0)
     # ─────────────────────────────────────────────────────────────────────────
