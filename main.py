@@ -24,6 +24,7 @@ import yaml
 
 
 from sweep import run_sweep
+from batch import run_batch
 from spectrabreast.pipeline import (
     run_full_pipeline,
     extract_suspicious_centroids,
@@ -66,11 +67,17 @@ def resolve_paths(cfg: dict, base_dir: str) -> dict:
     return cfg
  
  
-def validate_config(cfg: dict) -> bool:
-    """Controlla che i file di input esistano. Ritorna True se tutto ok."""
+def validate_config(cfg: dict, batch_mode: bool = False) -> bool:
+    """
+    Controlla che i file di input esistano.
+    In batch_mode, mesh/aruco vengono ignorati (saranno scoperti dal batch).
+    """
     p = cfg['paths']
     ok = True
-    for key, label in [('hsi_hdr', 'HSI .hdr'), ('mesh', 'Mesh'), ('aruco_json', 'ArUco JSON')]:
+    checks = [('hsi_hdr', 'HSI .hdr')]
+    if not batch_mode:
+        checks += [('mesh', 'Mesh'), ('aruco_json', 'ArUco JSON')]
+    for key, label in checks:
         if not os.path.exists(p[key]):
             print(f"[Validate] MANCANTE — {label}: {p[key]}")
             ok = False
@@ -143,6 +150,13 @@ def main():
     # Carica e risolvi config
     cfg = load_config(os.path.join(base_dir, args.config))
     cfg = resolve_paths(cfg, base_dir)
+
+    # Modalita' attiva: batch ha la priorita' su sweep
+    batch_enabled = cfg.get('batch', {}).get('enabled', False)
+    sweep_enabled = cfg.get('sweep', {}).get('enabled', False)
+    if batch_enabled and sweep_enabled:
+        print("[Main] AVVISO: batch e sweep entrambi attivi -> batch ha la priorita'.")
+        sweep_enabled = False
  
     # Override da CLI
     if args.sample:
@@ -179,10 +193,13 @@ def main():
     print("\n" + "=" * 68)
     print("SPECTRABREAST — RIEPILOGO CONFIGURAZIONE")
     print("=" * 68)
+    mode_label = "BATCH" if batch_enabled else ("SWEEP" if sweep_enabled else "SINGLE")
+    print(f"  Modalita'     : {mode_label}")
     print(f"  Campione      : {cfg['sample_name']}")
     print(f"  HSI           : {cfg['paths']['hsi_hdr']}")
-    print(f"  Mesh          : {cfg['paths']['mesh']}")
-    print(f"  ArUco JSON    : {cfg['paths']['aruco_json']}")
+    if not batch_enabled:
+        print(f"  Mesh          : {cfg['paths']['mesh']}")
+        print(f"  ArUco JSON    : {cfg['paths']['aruco_json']}")
     print(f"  Output        : {cfg['paths']['output_dir']}")
     print(f"  Risoluzione   : {cfg['render']['resolution_mm_per_px']} mm/px")
     print(f"  Metodo HSI    : {cfg['registration']['hsi_extraction_method']}")
@@ -194,7 +211,7 @@ def main():
  
     # Validazione
     print("\n[Validate] Controllo file di input...")
-    if not validate_config(cfg):
+    if not validate_config(cfg, batch_mode=batch_enabled):
         print("\n[Validate] ERRORE: uno o più file mancanti. Controlla config.yaml.")
         sys.exit(1)
     print("[Validate] Tutti i file di input trovati.\n")
@@ -211,11 +228,33 @@ def main():
     # Crea output dir
     os.makedirs(cfg['paths']['output_dir'], exist_ok=True)
 
-        # ── BRANCH SWEEP ─────────────────────────────────────────────────────────
-    
+    # ── BRANCH BATCH ─────────────────────────────────────────────────────────
+    #
+    # Se batch.enabled e' true, ignora paths.mesh / paths.aruco_json e
+    # processa tutte le coppie discoverte in input_dir matchando i pattern
+    # in sample_hsi_map. Mutuamente esclusivo con sweep.
+    if batch_enabled:
+        print("\n[Main] Modalita' BATCH attiva — processo piu' coppie sample.")
+
+        _render_fn = render_orthographic_topview_gpu if use_torch_render else None
+        print(f"[Main] render_fn = {_render_fn}")
+
+        run_batch(
+            cfg              = cfg,
+            aruco_dict_cv    = aruco_dict,
+            torch_device     = torch_device,
+            use_torch_render = use_torch_render,
+            base_dir         = base_dir,
+            render_fn        = _render_fn,
+        )
+        sys.exit(0)
+    # ─────────────────────────────────────────────────────────────────────────
+
+    # ── BRANCH SWEEP ─────────────────────────────────────────────────────────
+    #
     # Se sweep.enabled e' true, esegue la pipeline su tutte le coppie definite
     # in config.yaml -> sweep.resolution_pairs e produce SOLO l'Excel riepilogo.
-    if cfg.get('sweep', {}).get('enabled', False):
+    if sweep_enabled:
         print("\n[Main] Modalita' SWEEP attiva — ignoro le risoluzioni singole.")
 
         # Debug: verifica che render_fn non sia None
