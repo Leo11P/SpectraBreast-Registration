@@ -66,7 +66,32 @@ export:
   save_images: true      # false = non salva nessuna immagine
                          #   (render topview/depth, turbo depth, registration overlay, coverage map)
 
-    
+# -----------------------------------------------------------------------------
+# BATCH — esecuzione su PIU' coppie (mesh + aruco_json) in un solo run
+# -----------------------------------------------------------------------------
+# Quando batch.enabled e' true, main.py IGNORA paths.mesh / paths.aruco_json
+# e scandisce input_dir alla ricerca di cartelle che matchano i pattern
+# definiti in sample_hsi_map. Per ogni cartella trovata cerca al suo interno
+# i file mesh_filename + aruco_filename ed esegue la pipeline completa,
+# salvando i risultati in output_dir/<nome_cartella_sample>/.
+#
+# Al termine produce un Excel riepilogo unico:
+#   <output_dir>/batch_summary.xlsx
+#
+# Batch e sweep sono mutuamente esclusivi: se entrambi sono true, batch vince.
+batch:
+  enabled: false                              # true = attiva batch
+  input_dir: "data/input"                     # cartella radice da scansionare
+  mesh_filename:  "surface_mesh.ply"          # file mesh atteso dentro ogni sample dir
+  aruco_filename: "aruco_markers_3d.json"     # file ArUco JSON atteso dentro ogni sample dir
+
+  # Pattern -> HSI .hdr da usare per quel sample.
+  # I pattern usano la sintassi fnmatch (wildcard *, ?).
+  # Path relativi vengono risolti rispetto alla root del progetto.
+  sample_hsi_map:
+    "SAMPLE1*": "data/input/SB019/SB019_001/SB019_raw.hdr"
+    "SAMPLE2*": "data/input/SB020/SB020_001/SB020_raw.hdr"
+
 #-----------------------------------------------------------------------------
 #SWEEP — esecuzione batch su piu' coppie (res_reg, res_pc)
 #-----------------------------------------------------------------------------
