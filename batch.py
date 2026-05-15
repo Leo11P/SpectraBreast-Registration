@@ -197,16 +197,19 @@ def _run_single_sample(
     print(f"  Output  : {output_dir}")
     print("=" * 68)
 
+    t_total = time.time()   # ← cronometro totale: render + pipeline
+
     save_pointcloud = cfg['export'].get('save_pointcloud', True)
     save_images     = cfg['export'].get('save_images', True)
 
-    res_pc  = cfg['render']['resolution_mm_per_px']
-    res_reg = cfg['render'].get('resolution_reg_mm_per_px', res_pc)
+    res_pc  = cfg['render']['resolution'].get('pc',  cfg['render']['resolution'].get('pc',  0.3))
+    res_reg = cfg['render']['resolution'].get('reg', res_pc)
     dual    = abs(res_reg - res_pc) > 1e-6
 
-    # ── Pre-calcolo render GPU (come in main.py) ─────────────────────────────
+    # ── Pre-calcolo render GPU ───────────────────────────────────────────────
     precomputed_render     = None
     precomputed_render_reg = None
+    elapsed_render         = 0.0
 
     if use_torch_render and render_fn is not None:
         mesh = load_mesh(pair['mesh_path'], scale_m_to_mm=True)
@@ -219,7 +222,8 @@ def _run_single_sample(
             margin_mm=cfg['render']['margin_mm'],
             device=torch_device,
         )
-        print(f"[batch] Render PC completato in {time.time()-t0:.1f}s")
+        elapsed_render += time.time() - t0
+        print(f"[batch] Render PC completato in {elapsed_render:.1f}s")
 
         if dual:
             print(f"\n[batch] Render REG ({res_reg} mm/px) su {torch_device}...")
@@ -230,7 +234,8 @@ def _run_single_sample(
                 margin_mm=cfg['render']['margin_mm'],
                 device=torch_device,
             )
-            print(f"[batch] Render REG completato in {time.time()-t0:.1f}s")
+            elapsed_render += time.time() - t0
+            print(f"[batch] Render REG completato in {elapsed_render:.1f}s (cumulativo)")
         else:
             precomputed_render_reg = precomputed_render
             print("[batch] reg == pc — render condiviso.")
@@ -264,7 +269,8 @@ def _run_single_sample(
         precomputed_render       = precomputed_render,
         precomputed_render_reg   = precomputed_render_reg,
     )
-    elapsed = time.time() - t_pipe
+    elapsed_pipeline = time.time() - t_pipe
+    elapsed_total    = time.time() - t_total
 
     # ── Estrazione metriche per il riepilogo ─────────────────────────────────
     err2d_px      = result.get('err2d_px')
@@ -331,7 +337,9 @@ def _run_single_sample(
         'n_corners_3D_PC_bicubic'       : n_pc_bic,
         'n_points_cloud'                : n_pts,
         'n_bands'                       : bands,
-        'elapsed_s'                     : round(elapsed, 2),
+        'elapsed_render_s'              : round(elapsed_render,   2),
+        'elapsed_pipeline_s'            : round(elapsed_pipeline, 2),
+        'elapsed_total_s'               : round(elapsed_total,    2),
         'status'                        : 'ok',
     }
 
@@ -355,7 +363,9 @@ def _empty_row(pair: dict, res_reg: float, res_pc: float, status: str) -> dict:
         'n_corners_3D_PC_bilinear'      : 0, 'n_corners_3D_PC_bicubic'       : 0,
         'n_points_cloud'                : 0,
         'n_bands'                       : 0,
-        'elapsed_s'                     : 0.0,
+        'elapsed_render_s'              : 0.0,
+        'elapsed_pipeline_s'            : 0.0,
+        'elapsed_total_s'               : 0.0,
         'status'                        : status,
     }
 
@@ -423,7 +433,9 @@ def _write_batch_summary_xlsx(rows: list[dict], output_path: str) -> None:
         ('n_corners_3D_PC_bicubic',   'N corners\n3D PC bic',          meta_fill),
         ('n_points_cloud',            'N points\ncloud',               meta_fill),
         ('n_bands',                   'N bands',                       meta_fill),
-        ('elapsed_s',                 'Elapsed\n(s)',                  meta_fill),
+        ('elapsed_render_s',          'Render\n(s)',                   meta_fill),
+        ('elapsed_pipeline_s',        'Pipeline\n(s)',                 meta_fill),
+        ('elapsed_total_s',           'Totale\n(s)',                   meta_fill),
         ('status',                    'Status',                        meta_fill),
     ]
 
@@ -447,7 +459,7 @@ def _write_batch_summary_xlsx(rows: list[dict], output_path: str) -> None:
             c.font      = norm_font
             c.fill      = err_fill if is_err else fill
             if isinstance(val, float) and not np.isnan(val):
-                if key.endswith(('_mm', '_px')) or key == 'elapsed_s':
+                if key.endswith(('_mm', '_px', '_s')):
                     c.number_format = '0.0000'
 
     for ci, (_, label, _) in enumerate(columns, start=1):
