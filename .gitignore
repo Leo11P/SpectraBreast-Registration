@@ -42,3 +42,7 @@ Thumbs.db
 # File temporanei e di log
 *.log
 *.tmp
+
+# immagini
+.jpeg
+.png
