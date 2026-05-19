@@ -13,35 +13,6 @@ Registration of hyperspectral images (HSI) onto 3D meshes and generation of spec
 5. Exports the spectral point cloud as `.ply` (CloudCompare), `.npz` (Python), `.csv` (optional)
 6. Saves an Excel report with 2D and 3D registration errors
 
----
-
-## Project structure
-
-```
-SpectraBreast/
-├── main.py                        # entry point
-├── config.yaml                    # all parameters
-├── Pipeline_registrazione_2D3D.py # pipeline logic (do not modify)
-├── requirements.txt               # pip dependencies
-├── README.md
-├── .gitignore
-└── data/
-    ├── input/                     # input files (not versioned) -> example for first sample, 019!! ADJUST THE LAST NUMBER AND U GOOD
-    │   ├── SB019_raw.hdr
-    │   ├── SB019_raw.bin          # (or .raw / .img — same base name as .hdr)
-    │   ├── surface_mesh.ply
-    │   └── aruco_markers_3d.json
-    └── output/                    # results generated automatically
-        ├── SB019_render_topview.png
-        ├── SB019_render_turbo.png
-        ├── SB019_registration.png
-        ├── SB019_coverage.png
-        ├── SB019_registration_errors.xlsx
-        ├── spectral_pointcloud_SB019.ply
-        └── spectral_pointcloud_SB019.npz
-```
-
----
 
 ## Installation
 
