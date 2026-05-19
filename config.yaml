@@ -8,10 +8,10 @@
 # PATHS — Input / Output
 # -----------------------------------------------------------------------------
 paths:
-  hsi_hdr:      "/home/arota/SpectraBreast-Vision/DATA/HDR/SB019/SB019_001/SB019_raw.hdr"   # file ENVI .hdr
-  mesh:         "/home/arota/SpectraBreast-Vision/DATA/HDR/SAMPLE1/surface_mesh.ply"         # mesh 3D (.ply o .obj)
-  aruco_json:   "/home/arota/SpectraBreast-Vision/DATA/HDR/SAMPLE1/aruco_markers_3d.json"    # marker ArUco in metri
-  output_dir:   "/home/arota/SpectraBreast-Registration/accvscomp"               # cartella risultati
+  hsi_hdr:      "/home/spectra/test/SpectraBreast-Registration/data/input/SB019/SB019_001/SB019_raw.hdr"   # file ENVI .hdr  
+  mesh:         "/home/spectra/test/SpectraBreast-Registration/data/input/SAMPLE1/surface_mesh.ply"         # mesh 3D (.ply o .obj)
+  aruco_json:   "/home/spectra/test/SpectraBreast-Registration/data/input/SAMPLE1/aruco_markers_3d.json"    # marker ArUco in metri
+  output_dir:   "/home/spectra/test/SpectraBreast-Registration/data/output"               # cartella risultati
 
 # -----------------------------------------------------------------------------
 # NOME CAMPIONE — prefisso per tutti i file di output
@@ -80,8 +80,8 @@ export:
 #
 # Batch e sweep sono mutuamente esclusivi: se entrambi sono true, batch vince.
 batch:
-  enabled: true                              # true = attiva batch
-  input_dir: "/home/arota/SpectraBreast-Vision/RESULTS/accvscomp"                     # cartella radice da scansionare
+  enabled: false                              # true = attiva batch
+  input_dir: "/data/input"                     # cartella radice da scansionare
   mesh_filename:  "surface_mesh.ply"          # file mesh atteso dentro ogni sample dir
   aruco_filename: "aruco_markers_3d.json"     # file ArUco JSON atteso dentro ogni sample dir
 
@@ -89,8 +89,8 @@ batch:
   # I pattern usano la sintassi fnmatch (wildcard *, ?).
   # Path relativi vengono risolti rispetto alla root del progetto.
   sample_hsi_map:
-    "SAMPLE1*": "/home/arota/SpectraBreast-Vision/DATA/HDR/SB019/SB019_001/SB019_raw.hdr"
-    "SAMPLE2*": "/home/arota/SpectraBreast-Vision/DATA/HDR/SB020/SB020_001/SB020_raw.hdr"
+    "SAMPLE1*": "/data/input/SB019/SB019_001/SB019_raw.hdr"
+    "SAMPLE2*": "/data/input/SB020/SB020_001/SB020_raw.hdr"
 
 #-----------------------------------------------------------------------------
 #SWEEP — esecuzione batch su piu' coppie (res_reg, res_pc)
@@ -104,30 +104,30 @@ batch:
 sweep:
   enabled: false        # true = attiva sweep; false = pipeline singola normale
   resolution_pairs:     # lista di coppie [res_reg_mm_per_px, res_pc_mm_per_px]
-  - [5.0, 0.3]
-  - [2.0, 0.3]
-  - [1.5, 0.3]
-  - [1.0, 0.3]
-  - [0.9, 0.3]
-  - [0.8, 0.3]
-  - [0.7, 0.3]
-  - [0.6, 0.3]
-  - [0.5, 0.3]
-  - [5.0, 0.4]
-  - [2.0, 0.4]
-  - [1.5, 0.4]
-  - [1.0, 0.4]
-  - [0.9, 0.4]
-  - [0.8, 0.4]
-  - [0.7, 0.4]
-  - [0.6, 0.4]
-  - [0.5, 0.4]
+#  - [5.0, 0.3]
+#  - [2.0, 0.3]
+#  - [1.5, 0.3]
+#  - [1.0, 0.3]
+#  - [0.9, 0.3]
+#  - [0.8, 0.3]
+#  - [0.7, 0.3]
+#  - [0.6, 0.3]
+#  - [0.5, 0.3]
+#  - [5.0, 0.4]
+#  - [2.0, 0.4]
+#  - [1.5, 0.4]
+#  - [1.0, 0.4]
+#  - [0.9, 0.4]
+#  - [0.8, 0.4]
+#  - [0.7, 0.4]
+#  - [0.6, 0.4]
+#  - [0.5, 0.4]
   - [5.0, 0.5]
   - [2.0, 0.5]
   - [1.5, 0.5]
   - [1.0, 0.5]
-  - [0.9, 0.5]
-  - [0.8, 0.5]
-  - [0.7, 0.5]
-  - [0.6, 0.5]
+#  - [0.9, 0.5]
+#  - [0.8, 0.5]
+#  - [0.7, 0.5]
+#  - [0.6, 0.5]
   - [0.5, 0.5]
