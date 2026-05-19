@@ -1,133 +1,102 @@
 # =============================================================================
 # SPECTRABREAST — CONFIGURAZIONE PIPELINE
 # =============================================================================
-# Modifica questo file per cambiare i parametri senza toccare il codice.
-# Tutti i path sono relativi alla root del progetto.
+# Tutti i path sono assoluti o relativi alla root del progetto.
+# Il sample_name viene definito UNA SOLA VOLTA e usato come prefisso file.
+
+# -----------------------------------------------------------------------------
+# MODALITA' DI ESECUZIONE
+# -----------------------------------------------------------------------------
+# "single" : pipeline normale su una singola coppia mesh + aruco
+# "batch"  : scandisce input_dir e processa tutte le coppie sample trovate
+# "sweep"  : esegue la pipeline su piu' coppie di risoluzioni (reg, pc)
+mode: "single"
+
+# -----------------------------------------------------------------------------
+# CAMPIONE — prefisso per tutti i file di output (single + sweep)
+# -----------------------------------------------------------------------------
+sample_name: "SB019"
 
 # -----------------------------------------------------------------------------
 # PATHS — Input / Output
 # -----------------------------------------------------------------------------
+# In modalita' "batch" mesh e aruco_json vengono ignorati (scoperti automaticamente
+# dal batch dentro input_dir). hsi_hdr resta valido solo se sample_hsi_map vuoto.
 paths:
-  hsi_hdr:      "/home/spectra/test/SpectraBreast-Registration/data/input/SB019/SB019_001/SB019_raw.hdr"   # file ENVI .hdr  
-  mesh:         "/home/spectra/test/SpectraBreast-Registration/data/input/SAMPLE1/surface_mesh.ply"         # mesh 3D (.ply o .obj)
-  aruco_json:   "/home/spectra/test/SpectraBreast-Registration/data/input/SAMPLE1/aruco_markers_3d.json"    # marker ArUco in metri
-  output_dir:   "/home/spectra/test/SpectraBreast-Registration/data/output"               # cartella risultati
-
-# -----------------------------------------------------------------------------
-# NOME CAMPIONE — prefisso per tutti i file di output
-# -----------------------------------------------------------------------------
-sample_name: "SB019"
+  hsi_hdr:    "/home/spectra/test/SpectraBreast-Registration/data/input/SB019/SB019_001/SB019_raw.hdr"
+  mesh:       "/home/spectra/test/SpectraBreast-Registration/data/input/SAMPLE1/surface_mesh.ply"
+  aruco_json: "/home/spectra/test/SpectraBreast-Registration/data/input/SAMPLE1/aruco_markers_3d.json"
+  output_dir: "/home/spectra/test/SpectraBreast-Registration/data/output"
 
 # -----------------------------------------------------------------------------
 # REGISTRAZIONE
 # -----------------------------------------------------------------------------
 registration:
   hsi_extraction_method: "mean"   # "mean" | "visible_band" | "pca"
-  aruco_dict:            "4X4_50" # dizionario ArUco: "4X4_50" | "5X5_100" ecc.
-  marker_side_mm:        6.8      # lato fisico del marker ArUco in mm
+  aruco_dict:            "4X4_50" # dizionario ArUco
+  marker_side_mm:        6.8      # lato fisico del marker in mm
 
-  # SubPixel refinement post-detection (Punto 3): ±0.5-1 px -> ±0.05-0.2 px
+  # SubPixel refinement post-detection
   use_subpix:     true
-  subpix_winsize: 5               # semi-finestra (5 -> 11x11)
+  subpix_winsize: 5
 
 # -----------------------------------------------------------------------------
-# RENDER — ray casting ortografico (PyTorch, fully vectorized)
+# RENDER — ray casting ortografico (PyTorch / CuPy)
 # -----------------------------------------------------------------------------
 render:
-  resolution_mm_per_px:     2.0   # mm/px point cloud: 5.0=veloce, 0.5=fine
-  resolution_reg_mm_per_px: 0.5   # mm/px registrazione (piu grossolano = piu inlier RANSAC)
-                                  # Imposta uguale a resolution_mm_per_px per un solo render
-  margin_mm:            10.0      # padding attorno alla bounding box della mesh
-  # num_rays:           null      # lascia commentato/null per logica equivalente al CPU legacy
-  ray_chunk_size:       16384     # raggi per blocco (piu alto = meno overhead)
-  face_chunk_size:      2048      # triangoli per blocco dopo culling XY
-  sort_rays_for_culling: true     # ordina raggi in XY per culling piu efficace
+  resolution_mm_per_px:     2.0   # mm/px point cloud
+  resolution_reg_mm_per_px: 0.5   # mm/px registrazione (piu' grossolano = piu' inlier)
+  margin_mm:                10.0
+  ray_chunk_size:           16384
+  face_chunk_size:          2048
+  sort_rays_for_culling:    true
 
 # -----------------------------------------------------------------------------
 # POINT CLOUD SPETTRALE
 # -----------------------------------------------------------------------------
 pointcloud:
-  border_px:        2        # margine di sicurezza sul bordo HSI (px)
-  reflectance_norm: true     # normalizza ogni spettro in [0,1]
-  pc_chunk_size:    100000   # punti per chunk in modalita streaming (ridurre se RAM limitata)
+  border_px:        2
+  reflectance_norm: true
+  pc_chunk_size:    100000
 
 # -----------------------------------------------------------------------------
 # EXPORT
 # -----------------------------------------------------------------------------
 export:
-  # --- Point cloud ---
-  save_pointcloud: false  # false = salta costruzione e salvataggio point cloud (risparmia tempo/RAM)
-  ply:           true    # .ply  per CloudCompare / MeshLab  (ignorato se save_pointcloud: false)
-  npy:           true    # .npz  per Python (ricarica veloce) (ignorato se save_pointcloud: false)
-  csv:           false   # .csv  (file grande, disabilitato di default)
-  csv_max_points: 500000 # punti massimi nel CSV (campionamento casuale se superati)
+  save_pointcloud: false   # false = salta build/save point cloud
+  ply:             true    # ignorato se save_pointcloud=false
+  npy:             true    # ignorato se save_pointcloud=false
+  csv:             false
+  csv_max_points:  500000
 
-  # --- Immagini ---
-  save_images: false      # false = non salva nessuna immagine
-                         #   (render topview/depth, turbo depth, registration overlay, coverage map)
+  save_images:     false   # false = non salva nessuna immagine
 
 # -----------------------------------------------------------------------------
-# BATCH — esecuzione su PIU' coppie (mesh + aruco_json) in un solo run
+# BATCH — usato solo quando mode == "batch"
 # -----------------------------------------------------------------------------
-# Quando batch.enabled e' true, main.py IGNORA paths.mesh / paths.aruco_json
-# e scandisce input_dir alla ricerca di cartelle che matchano i pattern
-# definiti in sample_hsi_map. Per ogni cartella trovata cerca al suo interno
-# i file mesh_filename + aruco_filename ed esegue la pipeline completa,
-# salvando i risultati in output_dir/<nome_cartella_sample>/.
-#
-# Al termine produce un Excel riepilogo unico:
-#   <output_dir>/batch_summary.xlsx
-#
-# Batch e sweep sono mutuamente esclusivi: se entrambi sono true, batch vince.
+# Scandisce input_dir e processa tutte le cartelle che matchano i pattern in
+# sample_hsi_map. Per ogni cartella cerca mesh_filename + aruco_filename e
+# usa l'HSI .hdr definito dal pattern.
+# Output: <output_dir>/<nome_cartella_sample>/ + <output_dir>/batch_summary.xlsx
 batch:
-  enabled: false                              # true = attiva batch
-  input_dir: "/data/input"                     # cartella radice da scansionare
-  mesh_filename:  "surface_mesh.ply"          # file mesh atteso dentro ogni sample dir
-  aruco_filename: "aruco_markers_3d.json"     # file ArUco JSON atteso dentro ogni sample dir
+  input_dir:      "/data/input"
+  mesh_filename:  "surface_mesh.ply"
+  aruco_filename: "aruco_markers_3d.json"
 
-  # Pattern -> HSI .hdr da usare per quel sample.
-  # I pattern usano la sintassi fnmatch (wildcard *, ?).
-  # Path relativi vengono risolti rispetto alla root del progetto.
   sample_hsi_map:
     "SAMPLE1*": "/data/input/SB019/SB019_001/SB019_raw.hdr"
     "SAMPLE2*": "/data/input/SB020/SB020_001/SB020_raw.hdr"
 
-#-----------------------------------------------------------------------------
-#SWEEP — esecuzione batch su piu' coppie (res_reg, res_pc)
-#-----------------------------------------------------------------------------
-#Quando sweep.enabled e' true, main.py IGNORA i valori scalari di
-#render.resolution_mm_per_px / render.resolution_reg_mm_per_px e
-#cicla su tutte le coppie in resolution_pairs.
-#Durante lo sweep NON viene salvato NULLA tranne l'Excel riepilogativo finale:
-#<output_dir>/<sample_name>_sweep_resolution_summary.xlsx
-#(i flag export.save_pointcloud / export.save_images vengono forzati a false).
+# -----------------------------------------------------------------------------
+# SWEEP — usato solo quando mode == "sweep"
+# -----------------------------------------------------------------------------
+# Ignora i valori scalari di render.resolution_*_mm_per_px e cicla su tutte le
+# coppie [res_reg, res_pc]. Durante lo sweep non vengono salvati ne' immagini
+# ne' point cloud, tranne per la coppia migliore (se export.save_* = true).
 sweep:
-  enabled: false        # true = attiva sweep; false = pipeline singola normale
-  resolution_pairs:     # lista di coppie [res_reg_mm_per_px, res_pc_mm_per_px]
-#  - [5.0, 0.3]
-#  - [2.0, 0.3]
-#  - [1.5, 0.3]
-#  - [1.0, 0.3]
-#  - [0.9, 0.3]
-#  - [0.8, 0.3]
-#  - [0.7, 0.3]
-#  - [0.6, 0.3]
-#  - [0.5, 0.3]
-#  - [5.0, 0.4]
-#  - [2.0, 0.4]
-#  - [1.5, 0.4]
-#  - [1.0, 0.4]
-#  - [0.9, 0.4]
-#  - [0.8, 0.4]
-#  - [0.7, 0.4]
-#  - [0.6, 0.4]
-#  - [0.5, 0.4]
-  - [5.0, 0.5]
-  - [2.0, 0.5]
-  - [1.5, 0.5]
-  - [1.0, 0.5]
-#  - [0.9, 0.5]
-#  - [0.8, 0.5]
-#  - [0.7, 0.5]
-#  - [0.6, 0.5]
-  - [0.5, 0.5]
+  resolution_pairs:
+    - [5.0, 0.5]
+    - [2.0, 0.5]
+    - [1.5, 0.5]
+    - [1.0, 0.5]
+    - [0.5, 0.5]
