@@ -202,8 +202,8 @@ def _run_single_sample(
     save_pointcloud = cfg['export'].get('save_pointcloud', True)
     save_images     = cfg['export'].get('save_images', True)
 
-    res_pc  = cfg['render']['resolution'].get('pc',  cfg['render']['resolution'].get('pc',  0.3))
-    res_reg = cfg['render']['resolution'].get('reg', res_pc)
+    res_pc  = cfg['render']['resolution_mm_per_px']#.get('pc',  cfg['render']['resolution_mm_per_px'].get('pc',  0.3))
+    res_reg = cfg['render']['resolution_reg_mm_per_px']#.get('reg', res_pc)
     dual    = abs(res_reg - res_pc) > 1e-6
 
     # ── Pre-calcolo render GPU ───────────────────────────────────────────────
