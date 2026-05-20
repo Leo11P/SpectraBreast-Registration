@@ -14,12 +14,12 @@
 #            decide se usare modalita' ROI per ogni sample)
 # "sweep"  : esegue la pipeline su piu' coppie di risoluzioni (sweep.roi_mode
 #            decide se usare modalita' ROI)
-mode: "single"
+mode: "ROI"
 
 # -----------------------------------------------------------------------------
 # CAMPIONE — prefisso per tutti i file di output (single + sweep)
 # -----------------------------------------------------------------------------
-sample_name: "SB019"
+sample_name: "Rubik"
 
 # -----------------------------------------------------------------------------
 # PATHS — Input / Output
@@ -28,11 +28,11 @@ sample_name: "SB019"
 # (scoperti automaticamente dal batch dentro input_dir).
 # In modalita' "roi" e "sweep+roi_mode", liveview_png e' OBBLIGATORIO.
 paths:
-  hsi_hdr:      "/home/spectra/test/SpectraBreast-Registration/data/input/SB019/SB019_001/SB019_raw.hdr"
-  mesh:         "/home/spectra/test/SpectraBreast-Registration/data/input/SAMPLE1/surface_mesh.ply"
-  aruco_json:   "/home/spectra/test/SpectraBreast-Registration/data/input/SAMPLE1/aruco_markers_3d.json"
-  liveview_png: "/home/spectra/test/SpectraBreast-Registration/data/input/SB019/SB019_001/SB019_raw.png"
-  output_dir:   "/home/spectra/test/SpectraBreast-Registration/data/output"
+  hsi_hdr:      "/home/spectra/test/SpectraBreast-Registration/data/input/Rubik_001/Rubik_raw.hdr"
+  mesh:         "/home/spectra/test/SpectraBreast-Registration/data/input/SCRAP_18/surface_mesh.ply"
+  aruco_json:   "/home/spectra/test/SpectraBreast-Registration/data/input/SCRAP_18/aruco_markers_3d.json"
+  liveview_png: "/home/spectra/test/SpectraBreast-Registration/data/input/Rubik_001/Rubik_raw.png"
+  output_dir:   "/home/spectra/test/SpectraBreast-Registration/data/output/Rubik"
 
 # -----------------------------------------------------------------------------
 # REGISTRAZIONE
@@ -64,7 +64,7 @@ roi:
 # RENDER — ray casting ortografico (PyTorch / CuPy)
 # -----------------------------------------------------------------------------
 render:
-  resolution_mm_per_px:     2.0   # mm/px point cloud
+  resolution_mm_per_px:     5.0   # mm/px point cloud
   resolution_reg_mm_per_px: 0.5   # mm/px registrazione (piu' grossolano = piu' inlier)
   margin_mm:                10.0
   ray_chunk_size:           16384
@@ -83,13 +83,13 @@ pointcloud:
 # EXPORT
 # -----------------------------------------------------------------------------
 export:
-  save_pointcloud: false   # false = salta build/save point cloud
+  save_pointcloud: true   # false = salta build/save point cloud
   ply:             true    # ignorato se save_pointcloud=false
   npy:             true    # ignorato se save_pointcloud=false
   csv:             false
   csv_max_points:  500000
 
-  save_images:     false   # false = non salva nessuna immagine
+  save_images:     true   # false = non salva nessuna immagine
 
 # -----------------------------------------------------------------------------
 # BATCH — usato solo quando mode == "batch"
