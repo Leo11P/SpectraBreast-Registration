@@ -3,11 +3,20 @@ SPECTRABREAST — PUNTO DI INGRESSO
 ==================================
 Legge config.yaml e lancia la pipeline nella modalita' indicata da `mode`.
 
+Modalita' supportate:
+  "single" : pipeline normale (HSI con ArUco visibili) su una coppia mesh+aruco
+  "roi"    : HSI duale: PNG LiveView con ArUco + cubo ROI senza ArUco
+             (singolo sample)
+  "batch"  : scandisce input_dir e processa piu' coppie sample (single o ROI
+             a seconda di batch.roi_mode)
+  "sweep"  : esegue la pipeline su piu' coppie di risoluzioni (single o ROI
+             a seconda di sweep.roi_mode)
+
 Utilizzo:
     python3 main.py                          # usa config.yaml di default
     python3 main.py --config altro.yaml      # config alternativo
     python3 main.py --sample SB020           # override sample_name
-    python3 main.py --resolution 1.0         # override render resolution (single/sweep)
+    python3 main.py --resolution 1.0         # override render resolution
     python3 main.py --mode batch             # override modalita'
     python3 main.py --cpu                    # forza render su CPU
     python3 main.py --device cuda:1          # device torch specifico
@@ -25,11 +34,11 @@ import yaml
 from sweep import run_sweep
 from batch import run_batch
 from spectrabreast.pipeline import (
-    run_full_pipeline,
     load_mesh,
     save_render,
     save_turbo_render,
 )
+from spectrabreast.pipeline_roi import run_full_pipeline_roi
 
 # Render PyTorch (GPU se disponibile, altrimenti CPU torch)
 render_orthographic_topview_gpu = None
@@ -49,7 +58,7 @@ except Exception as e:
 # Caricamento e validazione config
 # =============================================================================
 
-VALID_MODES = ("single", "batch", "sweep")
+VALID_MODES = ("single", "roi", "batch", "sweep")
 
 
 def load_config(config_path: str) -> dict:
@@ -64,8 +73,8 @@ def load_config(config_path: str) -> dict:
 def resolve_paths(cfg: dict, base_dir: str) -> dict:
     """Converte i path relativi in assoluti rispetto alla root del progetto."""
     p = cfg['paths']
-    for key in ('hsi_hdr', 'mesh', 'aruco_json', 'output_dir'):
-        if not os.path.isabs(p[key]):
+    for key in ('hsi_hdr', 'mesh', 'aruco_json', 'output_dir', 'liveview_png'):
+        if key in p and p[key] and not os.path.isabs(p[key]):
             p[key] = os.path.join(base_dir, p[key])
     return cfg
 
@@ -80,22 +89,47 @@ def validate_mode(cfg: dict) -> str:
     return mode
 
 
+def _batch_uses_roi(cfg: dict) -> bool:
+    """In batch e sweep la modalita' ROI e' attivata da un flag dedicato."""
+    return bool(cfg.get('batch', {}).get('roi_mode', False))
+
+
+def _sweep_uses_roi(cfg: dict) -> bool:
+    return bool(cfg.get('sweep', {}).get('roi_mode', False))
+
+
 def validate_inputs(cfg: dict, mode: str) -> bool:
     """
     Controlla che i file di input richiesti dalla modalita' esistano.
-    In batch, mesh/aruco vengono scoperti dinamicamente -> non si validano qui.
+    In batch, mesh/aruco/liveview vengono scoperti dinamicamente -> non si validano qui.
     """
-    p = cfg['paths']
+    p  = cfg['paths']
     ok = True
+
     checks = [('hsi_hdr', 'HSI .hdr')]
-    if mode != 'batch':
+
+    if mode == 'single':
         checks += [('mesh', 'Mesh'), ('aruco_json', 'ArUco JSON')]
+    elif mode == 'roi':
+        checks += [('mesh', 'Mesh'),
+                   ('aruco_json', 'ArUco JSON'),
+                   ('liveview_png', 'LiveView PNG')]
+    elif mode == 'sweep':
+        checks += [('mesh', 'Mesh'), ('aruco_json', 'ArUco JSON')]
+        if _sweep_uses_roi(cfg):
+            checks += [('liveview_png', 'LiveView PNG (sweep ROI)')]
+    # batch: solo hsi_hdr (e' il default; il resto e' scoperto automaticamente)
+
     for key, label in checks:
-        if not os.path.exists(p[key]):
-            print(f"[Validate] MANCANTE — {label}: {p[key]}")
+        path = p.get(key)
+        if not path:
+            print(f"[Validate] MANCANTE — {label}: chiave 'paths.{key}' non definita")
+            ok = False
+        elif not os.path.exists(path):
+            print(f"[Validate] MANCANTE — {label}: {path}")
             ok = False
         else:
-            print(f"[Validate] OK        — {label}: {p[key]}")
+            print(f"[Validate] OK        — {label}: {path}")
     return ok
 
 
@@ -146,7 +180,6 @@ ARUCO_DICT_MAP = {
 def print_summary(cfg: dict, mode: str) -> None:
     """
     Stampa SOLO: modalita', paths, marker size, risoluzione attiva, save flags.
-    Niente metodo HSI, niente device, niente altro.
     """
     save_pc  = cfg['export'].get('save_pointcloud', False)
     save_img = cfg['export'].get('save_images', False)
@@ -160,15 +193,17 @@ def print_summary(cfg: dict, mode: str) -> None:
     if mode != 'batch':
         print(f"  Mesh          : {cfg['paths']['mesh']}")
         print(f"  ArUco JSON    : {cfg['paths']['aruco_json']}")
+        if mode == 'roi' or (mode == 'sweep' and _sweep_uses_roi(cfg)):
+            print(f"  LiveView PNG  : {cfg['paths'].get('liveview_png', 'N/A')}")
     else:
         print(f"  Input dir     : {cfg.get('batch', {}).get('input_dir', 'N/A')}")
-    print(f"  Output        : {cfg['paths']['output_dir']}")
+        print(f"  ROI mode      : {'SI' if _batch_uses_roi(cfg) else 'NO'}")
     print(f"  Marker side   : {cfg['registration']['marker_side_mm']} mm")
 
-    # Risoluzione dipende dalla modalita'
     if mode == 'sweep':
         pairs = cfg.get('sweep', {}).get('resolution_pairs', []) or []
         print(f"  Render        : sweep su {len(pairs)} coppie [reg, pc]")
+        print(f"  ROI mode      : {'SI' if _sweep_uses_roi(cfg) else 'NO'}")
     else:
         res_pc  = cfg['render']['resolution_mm_per_px']
         res_reg = cfg['render'].get('resolution_reg_mm_per_px', res_pc)
@@ -187,11 +222,9 @@ def main():
     args = parse_args()
     base_dir = os.path.dirname(os.path.abspath(__file__))
 
-    # Carica e risolvi config
     cfg = load_config(os.path.join(base_dir, args.config))
     cfg = resolve_paths(cfg, base_dir)
 
-    # Override CLI
     if args.sample:
         cfg['sample_name'] = args.sample
     if args.resolution:
@@ -199,7 +232,6 @@ def main():
     if args.mode:
         cfg['mode'] = args.mode
 
-    # Modalita' (validata e normalizzata)
     mode = validate_mode(cfg)
 
     # Device torch
@@ -215,10 +247,8 @@ def main():
         torch_device = 'cpu'
     use_torch_render = TORCH_AVAILABLE
 
-    # Riepilogo minimale
     print_summary(cfg, mode)
 
-    # Validazione input
     print("\n[Validate] Controllo file di input...")
     if not validate_inputs(cfg, mode):
         print("\n[Validate] ERRORE: uno o piu' file mancanti.")
@@ -229,14 +259,12 @@ def main():
         print("[Dry-run] Configurazione valida. Pipeline NON eseguita.")
         sys.exit(0)
 
-    # Dizionario ArUco
     aruco_key  = cfg['registration'].get('aruco_dict', '4X4_50')
     aruco_dict = ARUCO_DICT_MAP.get(aruco_key, cv2.aruco.DICT_4X4_50)
 
-    # Crea output dir
     os.makedirs(cfg['paths']['output_dir'], exist_ok=True)
 
-    # ── Dispatch sulle modalita' ─────────────────────────────────────────────
+    # ── Dispatch ─────────────────────────────────────────────────────────────
     if mode == 'batch':
         _render_fn = render_orthographic_topview_gpu if use_torch_render else None
         run_batch(
@@ -260,11 +288,10 @@ def main():
         )
         sys.exit(0)
 
-    # ── mode == "single" ─────────────────────────────────────────────────────
+    # ── mode == "single" o "roi" ─────────────────────────────────────────────
     save_pointcloud = cfg['export'].get('save_pointcloud', True)
     save_images     = cfg['export'].get('save_images', True)
 
-    # Pre-calcolo render GPU (entrambe le risoluzioni)
     precomputed_render     = None
     precomputed_render_reg = None
 
@@ -314,13 +341,22 @@ def main():
         else:
             precomputed_render_reg = precomputed_render
 
-    # Pipeline
+    # ── Parametri specifici ROI ──────────────────────────────────────────────
+    liveview_png_path = None
+    roi_align_cfg     = None
+    if mode == 'roi':
+        liveview_png_path = cfg['paths'].get('liveview_png')
+        roi_align_cfg     = cfg.get('roi', {}) or None
+
+    # ── Pipeline ─────────────────────────────────────────────────────────────
     t0 = time.time()
-    result = run_full_pipeline(
+    result = run_full_pipeline_roi(
         hsi_hdr_path             = cfg['paths']['hsi_hdr'],
         mesh_path                = cfg['paths']['mesh'],
         aruco_json_path          = cfg['paths']['aruco_json'],
         output_dir               = cfg['paths']['output_dir'],
+        liveview_png_path        = liveview_png_path,
+        roi_align_cfg            = roi_align_cfg,
         hsi_extraction_method    = cfg['registration']['hsi_extraction_method'],
         aruco_dict_type          = aruco_dict,
         suspicious_pixels_hsi    = None,
@@ -345,21 +381,25 @@ def main():
     )
     elapsed = time.time() - t0
 
-    # Riepilogo finale
     print("\n" + "=" * 68)
     print("PIPELINE COMPLETATA")
     print("=" * 68)
     print(f"  Tempo totale   : {elapsed:.1f}s  ({elapsed/60:.1f} min)")
-    n_pts   = result['n_valid'] if result.get('xyz')     is None else result['xyz'].shape[0]
-    n_bands = result['bands']   if result.get('spectra') is None else result['spectra'].shape[1]
+    n_pts   = result.get('n_valid', 0)
+    n_bands = result.get('bands', 0)
     if save_pointcloud:
         print(f"  Punti cloud    : {n_pts:,}")
         print(f"  Bande spettrali: {n_bands}")
     else:
         print("  Point cloud    : NON salvata")
-    if result['wavelengths']:
+    if result.get('wavelengths'):
         wl = result['wavelengths']
         print(f"  Lunghezze d'onda: {wl[0]:.1f} — {wl[-1]:.1f} nm")
+    if result.get('is_roi_mode'):
+        info = result['roi_align_info']
+        print(f"  ROI->PNG match : {info['n_inliers']}/{info['n_good_matches']} "
+              f"inliers ({100*info['inlier_ratio']:.1f}%), "
+              f"reproj={info['reproj_error_mean_px']:.3f} px")
     print(f"  Output         : {cfg['paths']['output_dir']}")
     print("=" * 68)
 

@@ -7,9 +7,13 @@
 # -----------------------------------------------------------------------------
 # MODALITA' DI ESECUZIONE
 # -----------------------------------------------------------------------------
-# "single" : pipeline normale su una singola coppia mesh + aruco
-# "batch"  : scandisce input_dir e processa tutte le coppie sample trovate
-# "sweep"  : esegue la pipeline su piu' coppie di risoluzioni (reg, pc)
+# "single" : pipeline normale (HSI con ArUco visibili) su una coppia mesh+aruco
+# "roi"    : HSI duale: PNG LiveView con ArUco + cubo ROI (.hdr) senza ArUco
+#            -> richiede paths.liveview_png
+# "batch"  : scandisce input_dir e processa piu' coppie (batch.roi_mode
+#            decide se usare modalita' ROI per ogni sample)
+# "sweep"  : esegue la pipeline su piu' coppie di risoluzioni (sweep.roi_mode
+#            decide se usare modalita' ROI)
 mode: "single"
 
 # -----------------------------------------------------------------------------
@@ -20,13 +24,15 @@ sample_name: "SB019"
 # -----------------------------------------------------------------------------
 # PATHS — Input / Output
 # -----------------------------------------------------------------------------
-# In modalita' "batch" mesh e aruco_json vengono ignorati (scoperti automaticamente
-# dal batch dentro input_dir). hsi_hdr resta valido solo se sample_hsi_map vuoto.
+# In modalita' "batch" mesh, aruco_json e liveview_png vengono ignorati
+# (scoperti automaticamente dal batch dentro input_dir).
+# In modalita' "roi" e "sweep+roi_mode", liveview_png e' OBBLIGATORIO.
 paths:
-  hsi_hdr:    "/home/spectra/test/SpectraBreast-Registration/data/input/SB019/SB019_001/SB019_raw.hdr"
-  mesh:       "/home/spectra/test/SpectraBreast-Registration/data/input/SAMPLE1/surface_mesh.ply"
-  aruco_json: "/home/spectra/test/SpectraBreast-Registration/data/input/SAMPLE1/aruco_markers_3d.json"
-  output_dir: "/home/spectra/test/SpectraBreast-Registration/data/output"
+  hsi_hdr:      "/home/spectra/test/SpectraBreast-Registration/data/input/SB019/SB019_001/SB019_raw.hdr"
+  mesh:         "/home/spectra/test/SpectraBreast-Registration/data/input/SAMPLE1/surface_mesh.ply"
+  aruco_json:   "/home/spectra/test/SpectraBreast-Registration/data/input/SAMPLE1/aruco_markers_3d.json"
+  liveview_png: "/home/spectra/test/SpectraBreast-Registration/data/input/SB019/SB019_001/SB019_raw.png"
+  output_dir:   "/home/spectra/test/SpectraBreast-Registration/data/output"
 
 # -----------------------------------------------------------------------------
 # REGISTRAZIONE
@@ -39,6 +45,20 @@ registration:
   # SubPixel refinement post-detection
   use_subpix:     true
   subpix_winsize: 5
+
+# -----------------------------------------------------------------------------
+# ROI — usato in modalita' "roi" e quando batch.roi_mode/sweep.roi_mode = true
+# -----------------------------------------------------------------------------
+# Parametri del feature matching ROI -> PNG LiveView via SIFT/ORB + RANSAC.
+# Default ragionevoli; modificare solo se il matching fallisce su sample
+# difficili o se serve un comportamento piu' stringente.
+roi:
+  method:         "sift"          # "sift" (preferito) | "orb"
+  min_matches:    20              # min good matches accettati (errore se inferiori)
+  ransac_thresh:  3.0             # soglia RANSAC in px per findHomography
+  lowe_ratio:     0.75            # ratio test di Lowe (tipico 0.7-0.8)
+  fallback_orb:   true            # se SIFT non disponibile prova ORB
+  save_match_viz: true            # salva diagnostica del matching (solo se save_images=true)
 
 # -----------------------------------------------------------------------------
 # RENDER — ray casting ortografico (PyTorch / CuPy)
@@ -77,11 +97,14 @@ export:
 # Scandisce input_dir e processa tutte le cartelle che matchano i pattern in
 # sample_hsi_map. Per ogni cartella cerca mesh_filename + aruco_filename e
 # usa l'HSI .hdr definito dal pattern.
+# Se roi_mode=true, per ogni sample cerca anche la PNG LiveView accanto al
+# .hdr (stesso basename, .png). Es: SB019_raw.hdr -> SB019_raw.png
 # Output: <output_dir>/<nome_cartella_sample>/ + <output_dir>/batch_summary.xlsx
 batch:
   input_dir:      "/data/input"
   mesh_filename:  "surface_mesh.ply"
   aruco_filename: "aruco_markers_3d.json"
+  roi_mode:       false              # true = pipeline ROI per tutti i sample
 
   sample_hsi_map:
     "SAMPLE1*": "/data/input/SB019/SB019_001/SB019_raw.hdr"
@@ -93,7 +116,9 @@ batch:
 # Ignora i valori scalari di render.resolution_*_mm_per_px e cicla su tutte le
 # coppie [res_reg, res_pc]. Durante lo sweep non vengono salvati ne' immagini
 # ne' point cloud, tranne per la coppia migliore (se export.save_* = true).
+# Se roi_mode=true, lo sweep usa la pipeline ROI (paths.liveview_png richiesto).
 sweep:
+  roi_mode: false                  # true = sweep in modalita' ROI
   resolution_pairs:
     - [5.0, 0.5]
     - [2.0, 0.5]

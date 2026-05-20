@@ -8,7 +8,13 @@ matchano i pattern dei sample (default: "SAMPLE1*" e "SAMPLE2*").
 Per ogni cartella trovata:
   - cerca al suo interno  surface_mesh.ply  e  aruco_markers_3d.json
   - usa l'HSI .hdr definito dalla mappa sample_hsi_map nel config
-  - esegue run_full_pipeline() in output_dir/<nome_cartella_sample>/
+  - esegue run_full_pipeline_roi() in output_dir/<nome_cartella_sample>/
+
+Modalita' ROI (batch.roi_mode: true):
+  - L'HSI .hdr e' il cubo ROI
+  - La PNG LiveView viene cercata accanto al .hdr con lo stesso basename
+    (es. SB019_raw.hdr -> SB019_raw.png)
+  - Se la PNG non esiste, il sample viene saltato con errore esplicito
 
 Al termine produce un Excel riepilogo unico con i risultati di tutte le coppie.
 
@@ -25,11 +31,12 @@ from typing import Optional
 
 import numpy as np
 
-from spectrabreast.pipeline import run_full_pipeline, load_mesh
+from spectrabreast.pipeline import load_mesh
+from spectrabreast.pipeline_roi import run_full_pipeline_roi
 
 
 # =============================================================================
-# Stats helpers (riusiamo la logica di sweep.py)
+# Stats helpers
 # =============================================================================
 
 def _stats(arr) -> tuple[float, float, int]:
@@ -59,14 +66,15 @@ def _px_per_mm_from_data(data_hsi: dict, marker_side_mm: float) -> float:
 # =============================================================================
 
 def _resolve_sample_hsi_path(hsi_value: str, base_dir: str) -> str:
-    """
-    Risolve un path HSI dalla config:
-      - se assoluto -> usato cosi' com'e'
-      - se relativo -> risolto rispetto a base_dir (root del progetto)
-    """
     if os.path.isabs(hsi_value):
         return hsi_value
     return os.path.join(base_dir, hsi_value)
+
+
+def _liveview_png_for_hdr(hdr_path: str) -> str:
+    """Deriva il path della PNG LiveView dallo stesso basename del .hdr."""
+    base, _ = os.path.splitext(hdr_path)
+    return base + '.png'
 
 
 def discover_sample_pairs(
@@ -75,24 +83,15 @@ def discover_sample_pairs(
     base_dir: str,
     mesh_filename: str = 'surface_mesh.ply',
     aruco_filename: str = 'aruco_markers_3d.json',
+    roi_mode: bool = False,
 ) -> list[dict]:
     """
     Scansiona input_dir alla ricerca di cartelle che matchano i pattern
     delle chiavi di sample_hsi_map (es. "SAMPLE1*", "SAMPLE2*").
 
-    Per ogni cartella trovata verifica la presenza di mesh + aruco_json e
-    determina l'HSI associato dalla mappa.
-
     Returns
     -------
-    pairs : list of dict, ciascuno con
-        'sample_dir_name' : nome della cartella (es. "SAMPLE1_run1")
-        'sample_pattern'  : pattern matchato (es. "SAMPLE1*")
-        'mesh_path'       : path assoluto al .ply
-        'aruco_path'      : path assoluto al .json
-        'hsi_hdr_path'    : path assoluto al .hdr (dalla mappa)
-        'output_subdir'   : nome della sottocartella di output da usare
-        'sample_name'     : nome usato come prefisso file (= sample_dir_name)
+    pairs : list of dict
     """
     if not os.path.isdir(input_dir):
         raise FileNotFoundError(
@@ -114,14 +113,13 @@ def discover_sample_pairs(
         if not os.path.isdir(full_path):
             continue
 
-        # Cerca un pattern che matcha
         matched_pattern = None
         for pattern in sample_hsi_map.keys():
             if fnmatch.fnmatch(entry, pattern):
                 matched_pattern = pattern
                 break
         if matched_pattern is None:
-            continue   # non rientra nei pattern dei sample da processare
+            continue
 
         mesh_path  = os.path.join(full_path, mesh_filename)
         aruco_path = os.path.join(full_path, aruco_filename)
@@ -141,19 +139,30 @@ def discover_sample_pairs(
             skipped.append((entry, f"HSI mancante: {hsi_hdr_path}"))
             continue
 
+        # Modalita' ROI: deve esistere anche la PNG LiveView accanto al .hdr
+        liveview_png_path = None
+        if roi_mode:
+            liveview_png_path = _liveview_png_for_hdr(hsi_hdr_path)
+            if not os.path.isfile(liveview_png_path):
+                skipped.append((entry,
+                                f"LiveView PNG mancante: {liveview_png_path}"))
+                continue
+
         pairs.append({
-            'sample_dir_name': entry,
-            'sample_pattern' : matched_pattern,
-            'mesh_path'      : mesh_path,
-            'aruco_path'     : aruco_path,
-            'hsi_hdr_path'   : hsi_hdr_path,
-            'output_subdir'  : entry,
-            'sample_name'    : entry,
+            'sample_dir_name'   : entry,
+            'sample_pattern'    : matched_pattern,
+            'mesh_path'         : mesh_path,
+            'aruco_path'        : aruco_path,
+            'hsi_hdr_path'      : hsi_hdr_path,
+            'liveview_png_path' : liveview_png_path,
+            'output_subdir'     : entry,
+            'sample_name'       : entry,
         })
 
     # Report
     print(f"\n[batch] Scansionata cartella: {input_dir}")
     print(f"[batch] Pattern attivi      : {list(sample_hsi_map.keys())}")
+    print(f"[batch] ROI mode            : {'SI' if roi_mode else 'NO'}")
     print(f"[batch] Coppie valide       : {len(pairs)}")
     for p in pairs:
         print(f"  + {p['sample_dir_name']:30s}  "
@@ -161,6 +170,8 @@ def discover_sample_pairs(
         print(f"      mesh : {os.path.relpath(p['mesh_path'], base_dir)}")
         print(f"      aruco: {os.path.relpath(p['aruco_path'], base_dir)}")
         print(f"      hsi  : {os.path.relpath(p['hsi_hdr_path'], base_dir)}")
+        if p['liveview_png_path']:
+            print(f"      png  : {os.path.relpath(p['liveview_png_path'], base_dir)}")
     if skipped:
         print(f"\n[batch] Cartelle ignorate: {len(skipped)}")
         for name, reason in skipped:
@@ -181,29 +192,25 @@ def _run_single_sample(
     use_torch_render: bool,
     render_fn,
 ) -> dict:
-    """
-    Esegue la pipeline completa per UNA coppia mesh+aruco.
-
-    Calcola i render GPU una sola volta (pc + reg) prima della pipeline,
-    esattamente come fa main.py per la run singola.
-    """
     sample_name = pair['sample_name']
     output_dir  = os.path.join(cfg['paths']['output_dir'], pair['output_subdir'])
     os.makedirs(output_dir, exist_ok=True)
+    roi_mode    = pair['liveview_png_path'] is not None
 
     print("\n" + "=" * 68)
     print(f"  BATCH RUN  —  {sample_name}")
     print(f"  Pattern : {pair['sample_pattern']}")
+    print(f"  ROI mode: {'SI' if roi_mode else 'NO'}")
     print(f"  Output  : {output_dir}")
     print("=" * 68)
 
-    t_total = time.time()   # ← cronometro totale: render + pipeline
+    t_total = time.time()
 
     save_pointcloud = cfg['export'].get('save_pointcloud', True)
     save_images     = cfg['export'].get('save_images', True)
 
-    res_pc  = cfg['render']['resolution_mm_per_px']#.get('pc',  cfg['render']['resolution_mm_per_px'].get('pc',  0.3))
-    res_reg = cfg['render']['resolution_reg_mm_per_px']#.get('reg', res_pc)
+    res_pc  = cfg['render']['resolution_mm_per_px']
+    res_reg = cfg['render']['resolution_reg_mm_per_px']
     dual    = abs(res_reg - res_pc) > 1e-6
 
     # ── Pre-calcolo render GPU ───────────────────────────────────────────────
@@ -242,11 +249,13 @@ def _run_single_sample(
 
     # ── Pipeline ─────────────────────────────────────────────────────────────
     t_pipe = time.time()
-    result = run_full_pipeline(
+    result = run_full_pipeline_roi(
         hsi_hdr_path             = pair['hsi_hdr_path'],
         mesh_path                = pair['mesh_path'],
         aruco_json_path          = pair['aruco_path'],
         output_dir               = output_dir,
+        liveview_png_path        = pair['liveview_png_path'],
+        roi_align_cfg            = cfg.get('roi', {}) or None,
         hsi_extraction_method    = cfg['registration']['hsi_extraction_method'],
         aruco_dict_type          = aruco_dict_cv,
         suspicious_pixels_hsi    = None,
@@ -272,11 +281,12 @@ def _run_single_sample(
     elapsed_pipeline = time.time() - t_pipe
     elapsed_total    = time.time() - t_total
 
-    # ── Estrazione metriche per il riepilogo ─────────────────────────────────
+    # ── Estrazione metriche ──────────────────────────────────────────────────
     err2d_px      = result.get('err2d_px')
     err3d_dict    = result.get('err3d_dict')
     err3d_dict_pc = result.get('err3d_dict_pc')
     data_hsi      = result.get('data_hsi')
+    roi_info      = result.get('roi_align_info')
 
     if data_hsi:
         px_per_mm = _px_per_mm_from_data(data_hsi, cfg['registration']['marker_side_mm'])
@@ -312,10 +322,16 @@ def _run_single_sample(
     n_pts = result.get('n_valid', 0)
     bands = result.get('bands', 0)
 
+    # Metriche del matching ROI->PNG (NaN se non in modalita' ROI)
+    roi_inliers   = roi_info['n_inliers']            if roi_info else 0
+    roi_matches   = roi_info['n_good_matches']       if roi_info else 0
+    roi_reproj_px = roi_info['reproj_error_mean_px'] if roi_info else float('nan')
+
     return {
         'sample'                        : sample_name,
         'pattern'                       : pair['sample_pattern'],
         'output_subdir'                 : pair['output_subdir'],
+        'roi_mode'                      : 'yes' if roi_mode else 'no',
         'res_reg_mm_pix'                : res_reg,
         'res_pc_mm_pix'                 : res_pc,
         '2D_mean_px'                    : m2px,
@@ -337,6 +353,9 @@ def _run_single_sample(
         'n_corners_3D_PC_bicubic'       : n_pc_bic,
         'n_points_cloud'                : n_pts,
         'n_bands'                       : bands,
+        'roi_inliers'                   : roi_inliers,
+        'roi_matches'                   : roi_matches,
+        'roi_reproj_px'                 : roi_reproj_px,
         'elapsed_render_s'              : round(elapsed_render,   2),
         'elapsed_pipeline_s'            : round(elapsed_pipeline, 2),
         'elapsed_total_s'               : round(elapsed_total,    2),
@@ -346,10 +365,12 @@ def _run_single_sample(
 
 def _empty_row(pair: dict, res_reg: float, res_pc: float, status: str) -> dict:
     nan = float('nan')
+    roi_mode = pair.get('liveview_png_path') is not None
     return {
         'sample'                        : pair['sample_name'],
         'pattern'                       : pair['sample_pattern'],
         'output_subdir'                 : pair['output_subdir'],
+        'roi_mode'                      : 'yes' if roi_mode else 'no',
         'res_reg_mm_pix'                : res_reg,
         'res_pc_mm_pix'                 : res_pc,
         '2D_mean_px'                    : nan, '2D_median_px'                  : nan,
@@ -363,6 +384,9 @@ def _empty_row(pair: dict, res_reg: float, res_pc: float, status: str) -> dict:
         'n_corners_3D_PC_bilinear'      : 0, 'n_corners_3D_PC_bicubic'       : 0,
         'n_points_cloud'                : 0,
         'n_bands'                       : 0,
+        'roi_inliers'                   : 0,
+        'roi_matches'                   : 0,
+        'roi_reproj_px'                 : nan,
         'elapsed_render_s'              : 0.0,
         'elapsed_pipeline_s'            : 0.0,
         'elapsed_total_s'               : 0.0,
@@ -375,9 +399,6 @@ def _empty_row(pair: dict, res_reg: float, res_pc: float, status: str) -> dict:
 # =============================================================================
 
 def _write_batch_summary_xlsx(rows: list[dict], output_path: str) -> None:
-    """
-    Scrive un Excel con una riga per coppia sample processata.
-    """
     from openpyxl import Workbook
     from openpyxl.styles import Font, PatternFill, Alignment, Border, Side
     from openpyxl.utils import get_column_letter
@@ -395,6 +416,7 @@ def _write_batch_summary_xlsx(rows: list[dict], output_path: str) -> None:
     norm_font = Font(name='Calibri', size=10)
 
     sample_fill = PatternFill('solid', start_color='FFF2CC')
+    roi_fill    = PatternFill('solid', start_color='FCE4D6')
     res_fill    = PatternFill('solid', start_color='F8CBAD')
     err2d_fill  = PatternFill('solid', start_color='DDEBF7')
     reg_fill    = PatternFill('solid', start_color='D9E1F2')
@@ -412,6 +434,7 @@ def _write_batch_summary_xlsx(rows: list[dict], output_path: str) -> None:
         ('sample',                    'Sample',                        sample_fill),
         ('pattern',                   'Pattern',                       sample_fill),
         ('output_subdir',             'Output dir',                    sample_fill),
+        ('roi_mode',                  'ROI\nmode',                     roi_fill),
         ('res_reg_mm_pix',            'res_reg\n(mm/px)',              res_fill),
         ('res_pc_mm_pix',             'res_pc\n(mm/px)',               res_fill),
         ('2D_mean_px',                '2D mean\n(px)',                 err2d_fill),
@@ -433,6 +456,9 @@ def _write_batch_summary_xlsx(rows: list[dict], output_path: str) -> None:
         ('n_corners_3D_PC_bicubic',   'N corners\n3D PC bic',          meta_fill),
         ('n_points_cloud',            'N points\ncloud',               meta_fill),
         ('n_bands',                   'N bands',                       meta_fill),
+        ('roi_inliers',               'ROI->PNG\ninliers',             roi_fill),
+        ('roi_matches',               'ROI->PNG\nmatches',             roi_fill),
+        ('roi_reproj_px',             'ROI->PNG\nreproj (px)',         roi_fill),
         ('elapsed_render_s',          'Render\n(s)',                   meta_fill),
         ('elapsed_pipeline_s',        'Pipeline\n(s)',                 meta_fill),
         ('elapsed_total_s',           'Totale\n(s)',                   meta_fill),
@@ -487,21 +513,11 @@ def run_batch(
 ) -> str:
     """
     Esegue il batch su tutte le coppie discoverte e ritorna il path dell'Excel.
-
-    Parameters
-    ----------
-    cfg              : config caricato (con path gia' risolti)
-    aruco_dict_cv    : costante OpenCV del dizionario ArUco
-    torch_device     : device torch (es. 'cuda', 'cpu')
-    use_torch_render : True se il render GPU e' disponibile
-    base_dir         : root del progetto (per risolvere path relativi degli HSI)
-    render_fn        : funzione render_orthographic_topview_gpu (o None)
     """
     batch_cfg = cfg.get('batch', {}) or {}
 
     input_dir = batch_cfg.get('input_dir')
     if input_dir is None:
-        # fallback: usa la cartella che contiene la mesh dichiarata nel config
         input_dir = os.path.dirname(os.path.dirname(cfg['paths']['mesh']))
     if not os.path.isabs(input_dir):
         input_dir = os.path.join(base_dir, input_dir)
@@ -509,6 +525,7 @@ def run_batch(
     sample_hsi_map = batch_cfg.get('sample_hsi_map', {}) or {}
     mesh_filename  = batch_cfg.get('mesh_filename',  'surface_mesh.ply')
     aruco_filename = batch_cfg.get('aruco_filename', 'aruco_markers_3d.json')
+    roi_mode       = bool(batch_cfg.get('roi_mode', False))
 
     print("\n" + "=" * 68)
     print("  BATCH MODE")
@@ -516,7 +533,10 @@ def run_batch(
     print(f"  Input dir       : {input_dir}")
     print(f"  Mesh filename   : {mesh_filename}")
     print(f"  Aruco filename  : {aruco_filename}")
+    print(f"  ROI mode        : {'SI' if roi_mode else 'NO'}")
     print(f"  Sample patterns : {list(sample_hsi_map.keys())}")
+    if roi_mode:
+        print(f"  PNG LiveView    : derivata dal .hdr (stesso basename, .png)")
 
     pairs = discover_sample_pairs(
         input_dir      = input_dir,
@@ -524,6 +544,7 @@ def run_batch(
         base_dir       = base_dir,
         mesh_filename  = mesh_filename,
         aruco_filename = aruco_filename,
+        roi_mode       = roi_mode,
     )
 
     if not pairs:
@@ -560,11 +581,9 @@ def run_batch(
 
     total_elapsed = time.time() - t_total
 
-    # ── Excel riepilogo ──────────────────────────────────────────────────────
     out_path = os.path.join(base_out, 'batch_summary.xlsx')
     _write_batch_summary_xlsx(rows, out_path)
 
-    # ── Riepilogo finale a terminale ─────────────────────────────────────────
     print("\n" + "=" * 68)
     print("BATCH COMPLETATO")
     print("=" * 68)
