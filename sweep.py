@@ -5,27 +5,20 @@ Esegue la pipeline di registrazione su una lista di coppie
 (resolution_reg_mm_per_px, resolution_pc_mm_per_px) lette da config.yaml
 e produce UN SOLO file Excel riepilogativo nella output_dir.
 
+Modalita' ROI nello sweep (sweep.roi_mode: true):
+  Lo sweep usa run_full_pipeline_roi() passando liveview_png_path letto da
+  cfg['paths']['liveview_png']. La T_roi_to_png viene ricalcolata in ogni
+  run (e' veloce, non dipende dal render) ma si potrebbe in futuro
+  cacheare se diventa il collo di bottiglia.
+
 Ottimizzazione render:
-  Prima di iniziare il loop sulle coppie, vengono raccolti tutti i valori
-  UNICI di risoluzione (sia da res_reg che da res_pc) e per ognuno viene
-  calcolato UN solo render GPU. Le run dello sweep poi riusano i render
-  dalla cache, evitando di ricalcolare lo stesso render piu' volte quando
-  piu' coppie condividono lo stesso valore.
+  Tutti i valori UNICI di risoluzione (sia res_reg che res_pc) vengono
+  calcolati UNA volta sola e cacheati. Le run riusano i render dalla cache.
 
 Salvataggio best result:
-  Se nel config export.save_pointcloud: true o export.save_images: true,
-  al termine dello sweep viene rieseguita la coppia con il 3D error assoluto
-  piu' basso (min tra tutte le colonne 3D mean: REG bilinear, REG bicubic,
-  PC bilinear, PC bicubic) con i flag di salvataggio attivi.
-  L'output viene scritto direttamente in output_dir con il prefisso del sample.
-  Nell'Excel la riga migliore e' evidenziata in verde; la cella specifica che
-  ha determinato il best (il valore minimo assoluto) e' evidenziata in arancio.
-
-Durante il loop principale:
-  - save_pointcloud  -> forzato False
-  - save_images      -> forzato False
-  - Excel per-run    -> scritto in _sweep_tmp/run_N/ (rimosso al termine)
-  - SOLO l'Excel riepilogativo finale viene scritto in output_dir.
+  Se export.save_pointcloud: true o export.save_images: true, al termine
+  la coppia con 3D error minimo viene rieseguita con i flag attivi.
+  La riga migliore e' evidenziata in verde nell'Excel.
 """
 
 from __future__ import annotations
@@ -38,11 +31,11 @@ from typing import Optional
 
 import numpy as np
 
-from spectrabreast.pipeline import run_full_pipeline, load_mesh
+from spectrabreast.pipeline import load_mesh
+from spectrabreast.pipeline_roi import run_full_pipeline_roi
 
-TORCH_AVAILABLE = True  # placeholder; la disponibilita' reale e' gestita da main.py
+TORCH_AVAILABLE = True
 
-# Colonne 3D mean usate per determinare la coppia migliore
 _3D_ERROR_KEYS = [
     '3D_REG_bilinear_mean_mm',
     '3D_REG_bicubic_mean_mm',
@@ -52,7 +45,7 @@ _3D_ERROR_KEYS = [
 
 
 # =============================================================================
-# Helper: statistiche robuste su array con NaN
+# Helper
 # =============================================================================
 
 def _stats(arr) -> tuple[float, float, int]:
@@ -78,14 +71,13 @@ def _px_per_mm_from_data(data_hsi: dict, marker_side_mm: float) -> float:
 
 
 def _best_3d_val(row: dict) -> float:
-    """Ritorna il minimo valore 3D mean valido della riga."""
     vals = [row.get(k, float('nan')) for k in _3D_ERROR_KEYS]
     valid = [v for v in vals if not np.isnan(v)]
     return min(valid) if valid else float('nan')
 
 
 # =============================================================================
-# Parsing / validazione delle coppie dal config
+# Parsing pairs + cache render
 # =============================================================================
 
 def parse_pairs(sweep_cfg: dict) -> list[tuple[float, float]]:
@@ -94,7 +86,6 @@ def parse_pairs(sweep_cfg: dict) -> list[tuple[float, float]]:
         raise ValueError("sweep.resolution_pairs non trovato in config.yaml.")
     if not isinstance(raw, (list, tuple)) or len(raw) == 0:
         raise ValueError("sweep.resolution_pairs deve essere una lista NON vuota.")
-
     pairs: list[tuple[float, float]] = []
     for i, item in enumerate(raw):
         if not isinstance(item, (list, tuple)) or len(item) != 2:
@@ -103,8 +94,7 @@ def parse_pairs(sweep_cfg: dict) -> list[tuple[float, float]]:
                 f"ricevuto {item!r}"
             )
         try:
-            r = float(item[0])
-            p = float(item[1])
+            r = float(item[0]); p = float(item[1])
         except (TypeError, ValueError) as e:
             raise ValueError(
                 f"sweep.resolution_pairs[{i}]: valori non numerici -> {item!r}"
@@ -117,10 +107,6 @@ def parse_pairs(sweep_cfg: dict) -> list[tuple[float, float]]:
         pairs.append((r, p))
     return pairs
 
-
-# =============================================================================
-# Cache dei render
-# =============================================================================
 
 _RES_TOL = 1e-6
 
@@ -148,11 +134,9 @@ def _precompute_renders(
 ) -> dict[float, tuple]:
     if render_fn is None:
         raise RuntimeError("render_fn e' None: impossibile pre-calcolare i render.")
-
     cache: dict[float, tuple] = {}
     n = len(unique_resolutions)
     print(f"\n[Sweep][Cache] Pre-calcolo di {n} render unici...")
-
     total_t0 = time.time()
     for i, res in enumerate(unique_resolutions):
         key = _quantize_res(res)
@@ -166,7 +150,6 @@ def _precompute_renders(
         )
         cache[key] = render_tuple
         print(f"[Sweep][Cache] Render {i+1}/{n} completato in {time.time()-t0:.1f}s")
-
     print(f"\n[Sweep][Cache] Tutti i {n} render pronti in {time.time()-total_t0:.1f}s")
     return cache
 
@@ -197,18 +180,21 @@ def _run_single_pair(
     use_torch_render: bool,
     tmp_dir: str,
     render_cache: Optional[dict[float, tuple]],
-    save_pointcloud_override: bool = False,
-    save_images_override: bool = False,
+    liveview_png_path: Optional[str] = None,
+    roi_align_cfg: Optional[dict]    = None,
+    save_pointcloud_override: bool   = False,
+    save_images_override: bool       = False,
 ) -> dict:
     """
-    Esegue run_full_pipeline per una coppia.
+    Esegue run_full_pipeline_roi per una coppia di risoluzioni.
 
-    save_pointcloud_override / save_images_override permettono al re-run
-    della coppia migliore di attivare il salvataggio senza toccare il config.
-    Nel loop principale entrambi sono False.
+    Se liveview_png_path != None la pipeline gira in modalita' ROI; altrimenti
+    run_full_pipeline_roi delega a run_full_pipeline (modalita' standard).
     """
+    roi_mode = liveview_png_path is not None
     print(f"\n{'=' * 68}")
-    print(f"  SWEEP RUN  —  res_reg = {res_reg} mm/px   res_pc = {res_pc} mm/px")
+    print(f"  SWEEP RUN  —  res_reg = {res_reg} mm/px   res_pc = {res_pc} mm/px"
+          f"  [ROI={'YES' if roi_mode else 'NO'}]")
     if save_pointcloud_override or save_images_override:
         print(f"  [BEST RUN — salvataggio attivo: "
               f"PC={save_pointcloud_override}  IMG={save_images_override}]")
@@ -219,9 +205,8 @@ def _run_single_pair(
     dual = abs(res_reg - res_pc) > 1e-6
 
     # ── Render dalla cache ───────────────────────────────────────────────────
-    precomputed_render = None
+    precomputed_render     = None
     precomputed_render_reg = None
-
     if use_torch_render and render_cache is not None:
         precomputed_render = _get_render(render_cache, res_pc)
         print(f"[Sweep][Cache] Render PC ({res_pc} mm/px) recuperato dalla cache.")
@@ -233,11 +218,13 @@ def _run_single_pair(
             print("[Sweep][Cache] reg == pc — render condiviso.")
 
     # ── Pipeline ─────────────────────────────────────────────────────────────
-    result = run_full_pipeline(
+    result = run_full_pipeline_roi(
         hsi_hdr_path             = cfg['paths']['hsi_hdr'],
         mesh_path                = cfg['paths']['mesh'],
         aruco_json_path          = cfg['paths']['aruco_json'],
         output_dir               = tmp_dir,
+        liveview_png_path        = liveview_png_path,
+        roi_align_cfg            = roi_align_cfg,
         hsi_extraction_method    = cfg['registration']['hsi_extraction_method'],
         aruco_dict_type          = aruco_dict_cv,
         suspicious_pixels_hsi    = None,
@@ -261,11 +248,12 @@ def _run_single_pair(
         precomputed_render_reg   = precomputed_render_reg,
     )
 
-    # ── Estrazione metriche ──────────────────────────────────────────────────
+    # ── Metriche ─────────────────────────────────────────────────────────────
     err2d_px      = result.get('err2d_px')
     err3d_dict    = result.get('err3d_dict')
     err3d_dict_pc = result.get('err3d_dict_pc')
     data_hsi      = result.get('data_hsi')
+    roi_info      = result.get('roi_align_info')
 
     if data_hsi:
         px_per_mm = _px_per_mm_from_data(data_hsi, cfg['registration']['marker_side_mm'])
@@ -298,72 +286,73 @@ def _run_single_pair(
         m_pc_bil, md_pc_bil, n_pc_bil = m_rb_bil, md_rb_bil, n_rb_bil
         m_pc_bic, md_pc_bic, n_pc_bic = m_rb_bic, md_rb_bic, n_rb_bic
 
+    roi_inliers   = roi_info['n_inliers']            if roi_info else 0
+    roi_matches   = roi_info['n_good_matches']       if roi_info else 0
+    roi_reproj_px = roi_info['reproj_error_mean_px'] if roi_info else float('nan')
+
     elapsed = time.time() - t0
     print(f"\n[Sweep] Run completata in {elapsed:.1f}s")
 
     return {
-        'res_reg_mm_pix'                : res_reg,
-        'res_pc_mm_pix'                 : res_pc,
-        '2D_mean_px'                    : m2px,
-        '2D_median_px'                  : med2px,
-        '2D_mean_mm'                    : m2mm,
-        '2D_median_mm'                  : med2mm,
-        '3D_REG_bilinear_mean_mm'       : m_rb_bil,
-        '3D_REG_bilinear_median_mm'     : md_rb_bil,
-        '3D_REG_bicubic_mean_mm'        : m_rb_bic,
-        '3D_REG_bicubic_median_mm'      : md_rb_bic,
-        '3D_PC_bilinear_mean_mm'        : m_pc_bil,
-        '3D_PC_bilinear_median_mm'      : md_pc_bil,
-        '3D_PC_bicubic_mean_mm'         : m_pc_bic,
-        '3D_PC_bicubic_median_mm'       : md_pc_bic,
-        'n_corners_2D'                  : n2,
-        'n_corners_3D_REG_bilinear'     : n_rb_bil,
-        'n_corners_3D_REG_bicubic'      : n_rb_bic,
-        'n_corners_3D_PC_bilinear'      : n_pc_bil,
-        'n_corners_3D_PC_bicubic'       : n_pc_bic,
-        'elapsed_s'                     : round(elapsed, 2),
-        'status'                        : 'ok',
+        'res_reg_mm_pix'            : res_reg,
+        'res_pc_mm_pix'             : res_pc,
+        'roi_mode'                  : 'yes' if roi_mode else 'no',
+        '2D_mean_px'                : m2px,
+        '2D_median_px'              : med2px,
+        '2D_mean_mm'                : m2mm,
+        '2D_median_mm'              : med2mm,
+        '3D_REG_bilinear_mean_mm'   : m_rb_bil,
+        '3D_REG_bilinear_median_mm' : md_rb_bil,
+        '3D_REG_bicubic_mean_mm'    : m_rb_bic,
+        '3D_REG_bicubic_median_mm'  : md_rb_bic,
+        '3D_PC_bilinear_mean_mm'    : m_pc_bil,
+        '3D_PC_bilinear_median_mm'  : md_pc_bil,
+        '3D_PC_bicubic_mean_mm'     : m_pc_bic,
+        '3D_PC_bicubic_median_mm'   : md_pc_bic,
+        'n_corners_2D'              : n2,
+        'n_corners_3D_REG_bilinear' : n_rb_bil,
+        'n_corners_3D_REG_bicubic'  : n_rb_bic,
+        'n_corners_3D_PC_bilinear'  : n_pc_bil,
+        'n_corners_3D_PC_bicubic'   : n_pc_bic,
+        'roi_inliers'               : roi_inliers,
+        'roi_matches'               : roi_matches,
+        'roi_reproj_px'             : roi_reproj_px,
+        'elapsed_s'                 : round(elapsed, 2),
+        'status'                    : 'ok',
     }
 
 
-def _empty_row(res_reg: float, res_pc: float, status: str) -> dict:
+def _empty_row(res_reg: float, res_pc: float, status: str,
+               roi_mode: bool = False) -> dict:
     nan = float('nan')
     return {
-        'res_reg_mm_pix'                : res_reg,
-        'res_pc_mm_pix'                 : res_pc,
-        '2D_mean_px'                    : nan, '2D_median_px'                  : nan,
-        '2D_mean_mm'                    : nan, '2D_median_mm'                  : nan,
-        '3D_REG_bilinear_mean_mm'       : nan, '3D_REG_bilinear_median_mm'     : nan,
-        '3D_REG_bicubic_mean_mm'        : nan, '3D_REG_bicubic_median_mm'      : nan,
-        '3D_PC_bilinear_mean_mm'        : nan, '3D_PC_bilinear_median_mm'      : nan,
-        '3D_PC_bicubic_mean_mm'         : nan, '3D_PC_bicubic_median_mm'       : nan,
-        'n_corners_2D'                  : 0,
-        'n_corners_3D_REG_bilinear'     : 0, 'n_corners_3D_REG_bicubic'      : 0,
-        'n_corners_3D_PC_bilinear'      : 0, 'n_corners_3D_PC_bicubic'       : 0,
-        'elapsed_s'                     : 0.0,
-        'status'                        : status,
+        'res_reg_mm_pix'            : res_reg,
+        'res_pc_mm_pix'             : res_pc,
+        'roi_mode'                  : 'yes' if roi_mode else 'no',
+        '2D_mean_px'                : nan, '2D_median_px'                  : nan,
+        '2D_mean_mm'                : nan, '2D_median_mm'                  : nan,
+        '3D_REG_bilinear_mean_mm'   : nan, '3D_REG_bilinear_median_mm'     : nan,
+        '3D_REG_bicubic_mean_mm'    : nan, '3D_REG_bicubic_median_mm'      : nan,
+        '3D_PC_bilinear_mean_mm'    : nan, '3D_PC_bilinear_median_mm'      : nan,
+        '3D_PC_bicubic_mean_mm'     : nan, '3D_PC_bicubic_median_mm'       : nan,
+        'n_corners_2D'              : 0,
+        'n_corners_3D_REG_bilinear' : 0, 'n_corners_3D_REG_bicubic'      : 0,
+        'n_corners_3D_PC_bilinear'  : 0, 'n_corners_3D_PC_bicubic'       : 0,
+        'roi_inliers'               : 0,
+        'roi_matches'               : 0,
+        'roi_reproj_px'             : nan,
+        'elapsed_s'                 : 0.0,
+        'status'                    : status,
     }
 
 
 # =============================================================================
-# Selezione coppia migliore
+# Best row + Excel
 # =============================================================================
 
 def _find_best_row(rows: list[dict]) -> tuple[int, float]:
-    """
-    Trova l'indice della riga con il 3D error assoluto minimo.
-
-    Per ogni riga prende il minimo tra le quattro colonne 3D mean
-    (REG bilinear, REG bicubic, PC bilinear, PC bicubic), poi seleziona
-    la riga con quel valore piu' basso.
-
-    Returns
-    -------
-    (best_idx, best_value)   best_idx = -1 se nessuna riga valida.
-    """
     best_idx = -1
     best_val = float('inf')
-
     for i, row in enumerate(rows):
         if row.get('status') != 'ok':
             continue
@@ -375,15 +364,10 @@ def _find_best_row(rows: list[dict]) -> tuple[int, float]:
         if row_min < best_val:
             best_val = row_min
             best_idx = i
-
     return best_idx, (best_val if best_idx >= 0 else float('nan'))
 
 
 def _winner_key(row: dict) -> Optional[str]:
-    """
-    Ritorna la chiave della colonna 3D mean che ha il valore minimo nella riga.
-    None se nessun valore valido.
-    """
     best_k = None
     best_v = float('inf')
     for k in _3D_ERROR_KEYS:
@@ -394,25 +378,12 @@ def _winner_key(row: dict) -> Optional[str]:
     return best_k
 
 
-# =============================================================================
-# Scrittura Excel riepilogo
-# =============================================================================
-
 def _write_summary_xlsx(
     rows: list[dict],
     output_path: str,
     sample_name: str,
     best_row_idx: int = -1,
 ) -> None:
-    """
-    Scrive l'Excel riepilogo dello sweep.
-
-    La riga migliore (best_row_idx) viene evidenziata:
-      - tutta la riga in verde (#00B050, testo bianco bold)
-      - la cella con il valore minimo assoluto 3D in arancio (#FF8C00)
-
-    In riga 3 viene riportato un riepilogo testuale della coppia migliore.
-    """
     from openpyxl import Workbook
     from openpyxl.styles import Font, PatternFill, Alignment, Border, Side
     from openpyxl.utils import get_column_letter
@@ -421,7 +392,6 @@ def _write_summary_xlsx(
     ws = wb.active
     ws.title = 'Sweep Summary'
 
-    # ── Stili base ───────────────────────────────────────────────────────────
     hdr_font   = Font(bold=True, color='FFFFFF', size=11)
     hdr_fill   = PatternFill('solid', start_color='305496')
     hdr_align  = Alignment(horizontal='center', vertical='center', wrap_text=True)
@@ -431,18 +401,17 @@ def _write_summary_xlsx(
     norm_font  = Font(name='Calibri', size=10)
 
     res_fill   = PatternFill('solid', start_color='FFF2CC')
+    roi_fill   = PatternFill('solid', start_color='FCE4D6')
     err2d_fill = PatternFill('solid', start_color='DDEBF7')
     reg_fill   = PatternFill('solid', start_color='D9E1F2')
     pc_fill    = PatternFill('solid', start_color='E2EFDA')
     meta_fill  = PatternFill('solid', start_color='F2F2F2')
 
-    # ── Stili riga migliore ──────────────────────────────────────────────────
-    best_fill   = PatternFill('solid', start_color='00B050')   # verde
+    best_fill   = PatternFill('solid', start_color='00B050')
     best_font   = Font(bold=True, color='FFFFFF', size=10)
-    winner_fill = PatternFill('solid', start_color='FF8C00')   # arancio
+    winner_fill = PatternFill('solid', start_color='FF8C00')
     winner_font = Font(bold=True, color='FFFFFF', size=10)
 
-    # ── Righe di intestazione ────────────────────────────────────────────────
     ws.cell(row=1, column=1,
             value=f"Resolution Sweep — {sample_name}").font = \
         Font(bold=True, size=14, color='1F4E78')
@@ -462,10 +431,10 @@ def _write_summary_xlsx(
                       f"(riga {best_row_idx + 1})").font = \
             Font(italic=True, bold=True, color='00B050', size=11)
 
-    # ── Definizione colonne ──────────────────────────────────────────────────
     columns: list[tuple[str, str, PatternFill]] = [
         ('res_reg_mm_pix',            'res_reg\n(mm/px)',              res_fill),
         ('res_pc_mm_pix',             'res_pc\n(mm/px)',               res_fill),
+        ('roi_mode',                  'ROI\nmode',                     roi_fill),
         ('2D_mean_px',                '2D mean\n(px)',                 err2d_fill),
         ('2D_median_px',              '2D median\n(px)',               err2d_fill),
         ('2D_mean_mm',                '2D mean\n(mm)',                 err2d_fill),
@@ -483,11 +452,14 @@ def _write_summary_xlsx(
         ('n_corners_3D_REG_bicubic',  'N corners\n3D REG bic',         meta_fill),
         ('n_corners_3D_PC_bilinear',  'N corners\n3D PC bil',          meta_fill),
         ('n_corners_3D_PC_bicubic',   'N corners\n3D PC bic',          meta_fill),
+        ('roi_inliers',               'ROI->PNG\ninliers',             roi_fill),
+        ('roi_matches',               'ROI->PNG\nmatches',             roi_fill),
+        ('roi_reproj_px',             'ROI->PNG\nreproj (px)',         roi_fill),
         ('elapsed_s',                 'Elapsed\n(s)',                  meta_fill),
         ('status',                    'Status',                        meta_fill),
     ]
 
-    HEADER_ROW = 5   # riga 4 libera per spaziatura
+    HEADER_ROW = 5
 
     for ci, (_, label, _) in enumerate(columns, start=1):
         c = ws.cell(row=HEADER_ROW, column=ci, value=label)
@@ -495,7 +467,6 @@ def _write_summary_xlsx(
         c.alignment = hdr_align; c.border = border
     ws.row_dimensions[HEADER_ROW].height = 36
 
-    # Determina la chiave della cella vincitrice (arancio)
     w_key = _winner_key(rows[best_row_idx]) if best_row_idx >= 0 else None
 
     def _fmt(v):
@@ -503,7 +474,6 @@ def _write_summary_xlsx(
 
     for row_i, row in enumerate(rows, start=HEADER_ROW + 1):
         is_best = (row_i - HEADER_ROW - 1) == best_row_idx
-
         for ci, (key, _, fill) in enumerate(columns, start=1):
             val = row.get(key, '')
             c   = ws.cell(row=row_i, column=ci, value=_fmt(val))
@@ -537,20 +507,32 @@ def _write_summary_xlsx(
 
 
 # =============================================================================
-# Entry point dello sweep
+# Entry point
 # =============================================================================
 
 def run_sweep(cfg: dict, aruco_dict_cv: int, torch_device: Optional[str],
               use_torch_render: bool, render_fn=None) -> str:
     """
     Esegue lo sweep completo e ritorna il path dell'Excel riepilogo.
-
-    Se cfg['export']['save_pointcloud'] o cfg['export']['save_images'] sono True,
-    al termine viene rieseguita la coppia migliore (3D error minimo assoluto)
-    con i flag di salvataggio attivi. L'output e' scritto in output_dir.
     """
     sweep_cfg = cfg.get('sweep', {}) or {}
-    pairs = parse_pairs(sweep_cfg)
+    pairs     = parse_pairs(sweep_cfg)
+    roi_mode  = bool(sweep_cfg.get('roi_mode', False))
+
+    # Parametri ROI letti dal config (validi solo se roi_mode == True)
+    liveview_png_path = None
+    roi_align_cfg     = None
+    if roi_mode:
+        liveview_png_path = cfg['paths'].get('liveview_png')
+        if not liveview_png_path:
+            raise ValueError(
+                "[Sweep] sweep.roi_mode=true ma paths.liveview_png non definito."
+            )
+        if not os.path.isfile(liveview_png_path):
+            raise FileNotFoundError(
+                f"[Sweep] LiveView PNG non trovata: {liveview_png_path}"
+            )
+        roi_align_cfg = cfg.get('roi', {}) or None
 
     save_pointcloud_cfg = cfg['export'].get('save_pointcloud', False)
     save_images_cfg     = cfg['export'].get('save_images', False)
@@ -558,6 +540,9 @@ def run_sweep(cfg: dict, aruco_dict_cv: int, torch_device: Optional[str],
 
     print("\n" + "=" * 68)
     print(f"  SWEEP RESOLUTION  —  {len(pairs)} coppie da testare")
+    print(f"  ROI mode          : {'SI' if roi_mode else 'NO'}")
+    if roi_mode:
+        print(f"  LiveView PNG      : {liveview_png_path}")
     print("=" * 68)
     for i, (r, p) in enumerate(pairs):
         print(f"  [{i + 1:2d}/{len(pairs)}]  res_reg = {r:>6.3f} mm/px   "
@@ -575,7 +560,6 @@ def run_sweep(cfg: dict, aruco_dict_cv: int, torch_device: Optional[str],
     print(f"[Sweep] Subdir temporanee in: {sweep_tmp_root}")
     print(f"[Sweep] (verranno eliminate al termine dello sweep)\n")
 
-    # ── Pre-calcolo render unici ─────────────────────────────────────────────
     render_cache: Optional[dict[float, tuple]] = None
     mesh = None
 
@@ -600,7 +584,7 @@ def run_sweep(cfg: dict, aruco_dict_cv: int, torch_device: Optional[str],
         print("[Sweep] AVVISO: render_fn non disponibile -> cache disabilitata.")
         print("[Sweep] Ogni run rifara' il render internamente (fallback CPU).")
 
-    # ── Loop principale (nessun salvataggio) ─────────────────────────────────
+    # ── Loop principale ──────────────────────────────────────────────────────
     rows: list[dict] = []
     for i, (res_reg, res_pc) in enumerate(pairs):
         tag     = f"reg{str(res_reg).replace('.','p')}_pc{str(res_pc).replace('.','p')}"
@@ -616,18 +600,22 @@ def run_sweep(cfg: dict, aruco_dict_cv: int, torch_device: Optional[str],
                 use_torch_render=use_torch_render,
                 tmp_dir=tmp_dir,
                 render_cache=render_cache,
+                liveview_png_path=liveview_png_path,
+                roi_align_cfg=roi_align_cfg,
                 save_pointcloud_override=False,
                 save_images_override=False,
             )
         except Exception as e:
             print(f"\n[Sweep] ERRORE su coppia ({res_reg}, {res_pc}): {e}")
             traceback.print_exc()
-            row = _empty_row(res_reg, res_pc, status=f'error: {type(e).__name__}: {e}')
+            row = _empty_row(res_reg, res_pc,
+                             status=f'error: {type(e).__name__}: {e}',
+                             roi_mode=roi_mode)
 
         rows.append(row)
         print(f"\n[Sweep] Progresso: {i + 1}/{len(pairs)} run completate.\n")
 
-    # ── Trova la coppia migliore ─────────────────────────────────────────────
+    # ── Best ─────────────────────────────────────────────────────────────────
     best_idx, best_val = _find_best_row(rows)
 
     if best_idx >= 0:
@@ -638,7 +626,7 @@ def run_sweep(cfg: dict, aruco_dict_cv: int, torch_device: Optional[str],
     else:
         print("\n[Sweep] AVVISO: nessuna riga valida trovata per il best.")
 
-    # ── Re-run della coppia migliore con salvataggio (se richiesto) ──────────
+    # ── Re-run best con salvataggio ──────────────────────────────────────────
     if do_best_rerun and best_idx >= 0:
         br           = rows[best_idx]
         res_reg_best = br['res_reg_mm_pix']
@@ -658,8 +646,10 @@ def run_sweep(cfg: dict, aruco_dict_cv: int, torch_device: Optional[str],
                 res_pc=res_pc_best,
                 torch_device=torch_device,
                 use_torch_render=use_torch_render,
-                tmp_dir=base_out,          # direttamente nella output_dir finale
+                tmp_dir=base_out,
                 render_cache=render_cache,
+                liveview_png_path=liveview_png_path,
+                roi_align_cfg=roi_align_cfg,
                 save_pointcloud_override=save_pointcloud_cfg,
                 save_images_override=save_images_cfg,
             )
@@ -675,12 +665,11 @@ def run_sweep(cfg: dict, aruco_dict_cv: int, torch_device: Optional[str],
     except Exception as e:
         print(f"[Sweep] Avviso: impossibile rimuovere {sweep_tmp_root}: {e}")
 
-    # ── Excel riepilogo ──────────────────────────────────────────────────────
+    # ── Excel ────────────────────────────────────────────────────────────────
     sample   = cfg['sample_name']
     out_path = os.path.join(base_out, f"{sample}_sweep_resolution_summary.xlsx")
     _write_summary_xlsx(rows, out_path, sample_name=sample, best_row_idx=best_idx)
 
-    # ── Riepilogo finale ─────────────────────────────────────────────────────
     print("\n" + "=" * 68)
     print("SWEEP COMPLETATO")
     print("=" * 68)
